@@ -118,7 +118,9 @@ h3 {
 }
 
 .brand {
-  display: block;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
   padding: 0 6px 2px;
   text-decoration: none;
 }
@@ -127,10 +129,35 @@ h3 {
   display: block;
   filter: drop-shadow(0 8px 18px rgba(139, 67, 255, 0.22));
   height: auto;
-  max-height: 116px;
+  justify-self: center;
+  max-width: 100%;
   object-fit: contain;
-  object-position: left center;
-  width: 100%;
+  object-position: center center;
+  width: 214px;
+}
+
+body.controller-offline .brand-logo {
+  filter: drop-shadow(0 8px 18px rgba(255, 70, 63, 0.28));
+}
+
+.brand-status-badge {
+  align-self: center;
+  border: 1px solid rgba(176, 108, 255, 0.72);
+  border-radius: 999px;
+  color: var(--purple-2);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  margin: -6px auto 0;
+  padding: 5px 10px;
+  text-transform: uppercase;
+  width: max-content;
+}
+
+body.controller-offline .brand-status-badge {
+  border-color: rgba(255, 70, 63, 0.72);
+  color: #ff8a85;
 }
 
 .nav {

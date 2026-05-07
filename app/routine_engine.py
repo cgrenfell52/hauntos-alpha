@@ -31,17 +31,29 @@ _runtime_status: dict[str, Any] = {
     "tile": None,
     "run_id": None,
 }
+_active_runs: dict[int, dict[str, Any]] = {}
 
 
-def run_routine(tile_list: list[dict[str, Any]], routine_id: str | None = None) -> threading.Thread:
+class RoutineConcurrencyError(RuntimeError):
+    """Raised when a routine start is blocked by the active concurrency policy."""
+
+
+def run_routine(
+    tile_list: list[dict[str, Any]],
+    routine_id: str | None = None,
+    allow_concurrent: bool = False,
+) -> threading.Thread:
     """Start a routine in a background thread and return the thread."""
     global _stop_event, _run_counter
 
     if not isinstance(tile_list, list):
         raise ValueError("Routine must be a list of tiles")
+    if not isinstance(allow_concurrent, bool):
+        raise ValueError("allow_concurrent must be true or false")
 
     with _lock:
         _prune_finished_threads()
+        _enforce_concurrency_policy(allow_concurrent)
         if _stop_event.is_set():
             _stop_event = threading.Event()
 
@@ -54,6 +66,15 @@ def run_routine(tile_list: list[dict[str, Any]], routine_id: str | None = None) 
             daemon=True,
         )
         _threads.append(thread)
+        _active_runs[run_id] = {
+            "run_id": run_id,
+            "routine_id": routine_id,
+            "allow_concurrent": allow_concurrent,
+            "thread": thread,
+            "started_at": time.time(),
+            "tile_index": None,
+            "tile": None,
+        }
         thread.start()
         return thread
 
@@ -77,6 +98,26 @@ def get_runtime_status() -> dict[str, Any]:
         }
 
 
+def get_active_runs() -> list[dict[str, Any]]:
+    """Return currently active routine runs for multi-run status UIs."""
+    with _lock:
+        _prune_finished_threads()
+        runs = []
+        for run_id, run in sorted(_active_runs.items()):
+            tile = run.get("tile")
+            runs.append(
+                {
+                    "run_id": run_id,
+                    "routine_id": run.get("routine_id"),
+                    "allow_concurrent": bool(run.get("allow_concurrent", False)),
+                    "tile_index": run.get("tile_index"),
+                    "tile": dict(tile) if isinstance(tile, dict) else None,
+                    "started_at": run.get("started_at"),
+                }
+            )
+        return runs
+
+
 def is_running() -> bool:
     """Return True if any routine thread is still running."""
     with _lock:
@@ -97,6 +138,7 @@ def _run_tiles(
             _set_current_tile(run_id, routine_id, index, tile)
             _run_tile(tile, stop_event)
     finally:
+        _finish_run(run_id)
         _clear_current_tile(run_id)
         if stop_event.is_set():
             gpio_controller.all_off()
@@ -155,7 +197,8 @@ def _run_sound_tile(tile: dict[str, Any]) -> None:
         return
 
     mode = tile.get("mode", "play_and_continue")
-    audio_controller.play_sound(filename, mode=mode)
+    allow_concurrent = bool(tile.get("allow_concurrent", False))
+    audio_controller.play_sound(filename, mode=mode, allow_concurrent=allow_concurrent)
 
 
 def _run_video_tile(tile: dict[str, Any]) -> None:
@@ -195,6 +238,32 @@ def _duration(tile: dict[str, Any]) -> float:
 
 def _prune_finished_threads() -> None:
     _threads[:] = [thread for thread in _threads if thread.is_alive()]
+    finished_runs = [
+        run_id
+        for run_id, run in _active_runs.items()
+        if not run.get("thread") or not run["thread"].is_alive()
+    ]
+    for run_id in finished_runs:
+        _active_runs.pop(run_id, None)
+
+
+def _enforce_concurrency_policy(new_allow_concurrent: bool) -> None:
+    if not _active_runs:
+        return
+
+    if new_allow_concurrent and all(
+        bool(run.get("allow_concurrent", False)) for run in _active_runs.values()
+    ):
+        return
+
+    active_names = [
+        str(run.get("routine_id") or f"run {run_id}")
+        for run_id, run in sorted(_active_runs.items())
+    ]
+    active_text = ", ".join(active_names) if active_names else "another routine"
+    raise RoutineConcurrencyError(
+        f"{active_text} is already running. Stop the active routine or enable Allow Concurrent on both routines before starting another."
+    )
 
 
 def _set_current_tile(
@@ -208,6 +277,17 @@ def _set_current_tile(
         _runtime_status["routine_id"] = routine_id
         _runtime_status["tile_index"] = tile_index
         _runtime_status["tile"] = dict(tile)
+
+    with _lock:
+        run = _active_runs.get(run_id)
+        if run is not None:
+            run["tile_index"] = tile_index
+            run["tile"] = dict(tile)
+
+
+def _finish_run(run_id: int) -> None:
+    with _lock:
+        _active_runs.pop(run_id, None)
 
 
 def _clear_current_tile(run_id: int | None = None) -> None:

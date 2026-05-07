@@ -17,6 +17,7 @@ try:
         audio_controller,
         config_store,
         gpio_controller,
+        routine_schema,
         routine_engine,
         scheduler,
         system_tools,
@@ -27,6 +28,7 @@ except ImportError:  # Allows running this file directly from the app folder.
     import audio_controller  # type: ignore
     import config_store  # type: ignore
     import gpio_controller  # type: ignore
+    import routine_schema  # type: ignore
     import routine_engine  # type: ignore
     import scheduler  # type: ignore
     import system_tools  # type: ignore
@@ -89,8 +91,10 @@ def register_routes(app: Flask) -> None:
     def status():
         return _json_ok(
             {
+                "version": system_tools.VERSION,
                 "running": routine_engine.is_running(),
                 "routine": routine_engine.get_runtime_status(),
+                "active_runs": routine_engine.get_active_runs(),
                 "outputs": gpio_controller.get_output_states(),
                 "settings": config_store.get_settings(),
             }
@@ -158,27 +162,56 @@ def register_routes(app: Flask) -> None:
             return _json_error(f"Routine for {input_id} must be a list", 400)
 
         try:
-            routine_engine.run_routine(tile_list, routine_id=input_id)
+            devices = config_store.get_devices()
+            normalized_tiles = routine_schema.normalize_tile_list(
+                tile_list,
+                devices,
+                context=f"Routine {input_id}",
+            )
+            routine_engine.run_routine(
+                normalized_tiles,
+                routine_id=input_id,
+                allow_concurrent=_input_allows_concurrency(devices, input_id),
+            )
         except ValueError as exc:
             return _json_error(str(exc), 400)
+        except routine_engine.RoutineConcurrencyError as exc:
+            return _json_error(str(exc), 409)
 
-        return _json_ok({"running": routine_engine.is_running(), "input": input_id}, 202)
+        return _json_ok(
+            {"running": routine_engine.is_running(), "input": input_id, "active_runs": routine_engine.get_active_runs()},
+            202,
+        )
 
     @app.post("/api/run/custom")
     def run_custom():
         data = request.get_json(silent=True)
         tile_list = data.get("tiles") if isinstance(data, dict) else data
         routine_id = data.get("routine_id") if isinstance(data, dict) else None
+        allow_concurrent = data.get("allow_concurrent", False) if isinstance(data, dict) else False
 
         if not isinstance(tile_list, list):
             return _json_error("Request body must be a tile list or an object with a tiles list", 400)
+        if not isinstance(allow_concurrent, bool):
+            return _json_error("allow_concurrent must be true or false", 400)
 
         try:
-            routine_engine.run_routine(tile_list, routine_id=routine_id)
+            normalized_tiles = routine_schema.normalize_tile_list(
+                tile_list,
+                config_store.get_devices(),
+                context="Custom routine",
+            )
+            routine_engine.run_routine(
+                normalized_tiles,
+                routine_id=routine_id,
+                allow_concurrent=allow_concurrent,
+            )
         except ValueError as exc:
             return _json_error(str(exc), 400)
+        except routine_engine.RoutineConcurrencyError as exc:
+            return _json_error(str(exc), 409)
 
-        return _json_ok({"running": routine_engine.is_running()}, 202)
+        return _json_ok({"running": routine_engine.is_running(), "active_runs": routine_engine.get_active_runs()}, 202)
 
     @app.post("/api/stop")
     def stop():
@@ -378,6 +411,11 @@ def register_routes(app: Flask) -> None:
         except ValueError as exc:
             return _json_error(str(exc), 400)
 
+        try:
+            gpio_controller.setup()
+        except Exception as exc:
+            LOGGER.warning("GPIO setup refresh after setup save failed: %s", exc)
+
         return _json_ok(result)
 
 
@@ -508,6 +546,8 @@ def _apply_setup(data: dict[str, Any]) -> dict[str, Any]:
             devices["inputs"][input_id]["name"] = str(name).strip()
 
     settings["controller_name"] = controller_name
+    if "mock_mode" in data:
+        settings["mock_mode"] = bool(data["mock_mode"])
     settings["setup_complete"] = True
 
     config_store.save_devices(devices)
@@ -525,6 +565,12 @@ def _set_show_armed(armed: bool) -> dict[str, Any]:
     settings["show_armed"] = bool(armed)
     config_store.save_settings(settings)
     return settings
+
+
+def _input_allows_concurrency(devices: dict[str, Any], input_id: str) -> bool:
+    inputs = devices.get("inputs", {}) if isinstance(devices, dict) else {}
+    input_config = inputs.get(input_id, {}) if isinstance(inputs, dict) else {}
+    return bool(input_config.get("allow_concurrent", False)) if isinstance(input_config, dict) else False
 
 
 def _access_info() -> dict[str, Any]:

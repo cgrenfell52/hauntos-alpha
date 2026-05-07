@@ -25,6 +25,20 @@
       <span>Controller Name</span>
       <input id="setup-controller-name" name="controller_name" type="text" value="HauntOS Controller" required>
     </label>
+    <label class="toggle-row setup-toggle-row">
+      <input id="setup-mock-mode" type="checkbox">
+      <span>
+        <strong>Mock Mode</strong>
+        <small>Use simulated GPIO/media for local testing. Disable on the Pi when hardware is connected.</small>
+      </span>
+    </label>
+    <label class="toggle-row setup-toggle-row">
+      <input id="setup-logo-preview" type="checkbox">
+      <span>
+        <strong>Preview Disconnected Logo</strong>
+        <small>Show the red offline logo and badge for visual testing only.</small>
+      </span>
+    </label>
   </section>
 
   <section class="panel setup-step">

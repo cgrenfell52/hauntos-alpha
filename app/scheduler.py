@@ -78,8 +78,6 @@ def scheduler_loop() -> None:
                 _next_run_at = None
             elif not _is_armed():
                 _next_run_at = None
-            elif routine_engine.is_running():
-                pass
             else:
                 now = time.monotonic()
                 if _next_run_at is None:
@@ -174,7 +172,17 @@ def _run_scheduled_routine(settings: dict[str, Any]) -> None:
         return
 
     LOGGER.info("Scheduler running routine %s", routine_id)
-    routine_engine.run_routine(tile_list, routine_id=routine_id)
+    devices = config_store.get_devices()
+    input_config = devices.get("inputs", {}).get(routine_id, {})
+    allow_concurrent = (
+        bool(input_config.get("allow_concurrent", False))
+        if isinstance(input_config, dict)
+        else False
+    )
+    try:
+        routine_engine.run_routine(tile_list, routine_id=routine_id, allow_concurrent=allow_concurrent)
+    except routine_engine.RoutineConcurrencyError as exc:
+        LOGGER.info("Scheduler routine %s blocked: %s", routine_id, exc)
 
 
 def _choose_routine_id(settings: dict[str, Any], routines: dict[str, Any]) -> str | None:

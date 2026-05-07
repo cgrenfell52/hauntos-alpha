@@ -14,6 +14,8 @@ let schedulerData = null;
 let dirtyRoutineInputs = new Set();
 let lastRuntimeKey = "";
 let statusPollTimer = null;
+let controllerOnline = true;
+let logoPreviewOffline = false;
 
 document.addEventListener("DOMContentLoaded", () => {
   bindShellActions();
@@ -55,6 +57,7 @@ async function loadPage() {
     }
 
     const responses = await Promise.all(requests);
+    setControllerConnection(true);
     devices = responses[0].devices;
     statusData = responses[1];
     routines = responses[2].routines;
@@ -89,11 +92,13 @@ async function loadPage() {
       await renderSchedulerPage();
     }
   } catch (error) {
+    setControllerConnection(false);
     showMessage(error.message, true);
   }
 }
 
 function renderShellStatus() {
+  setControllerConnection(true);
   const settings = statusData.settings || {};
   const showArmed = Boolean(settings.show_armed);
   const schedulerEnabled = Boolean(settings.scheduler?.enabled);
@@ -101,7 +106,7 @@ function renderShellStatus() {
   const detailText = statusData.running
     ? showArmed ? "Routine active / show armed" : "Routine finishing / show stopped"
     : showArmed ? "Show is armed" : "Show is stopped";
-  const version = settings.version || "1.0.0";
+  const version = statusData.version || settings.version || "v0.1.0-alpha";
 
   document.body.classList.toggle("is-running", Boolean(statusData.running));
   document.body.classList.toggle("show-armed", showArmed);
@@ -243,8 +248,8 @@ async function renderSystemPage() {
     list.innerHTML = "";
     [
       ["Controller", info.controller_name || "HauntOS Controller"],
-      ["Version", info.version || "1.0.0"],
-      ["Mock Mode", info.mock_mode ? "Enabled" : "Disabled"],
+      ["Version", info.version || "v0.1.0-alpha"],
+      ["Controller Mode", info.mock_mode ? "Mock mode" : "Hardware GPIO mode"],
       ["Show Armed", info.settings?.show_armed ? "Yes" : "No"],
       ["Setup Complete", info.settings?.setup_complete ? "Yes" : "No"],
       ["Running Routine", info.running ? "Yes" : "No"],
@@ -268,15 +273,16 @@ function renderConnectionInfo(info) {
   const lanUrls = Array.isArray(access.lan_urls) ? access.lan_urls : [];
   const connectionList = document.querySelector("#connection-list");
 
-  setText("#connection-summary", deployment.is_raspberry_pi ? "Pi deployment" : "Local / mock");
+  setText("#connection-summary", controllerOnline ? "API connected" : "API offline");
   if (!connectionList) {
     return;
   }
 
   connectionList.innerHTML = "";
   [
+    ["Controller Connection", controllerOnline ? "Connected to HauntOS API" : "Offline"],
     ["Running On", deployment.is_raspberry_pi ? deployment.pi_model : `${deployment.platform || "Local"} machine`],
-    ["GPIO Mode", info.mock_mode ? "Mock mode - no hardware active" : "Hardware mode"],
+    ["Control Mode", info.mock_mode ? "Mock mode - simulated GPIO/media" : "Hardware mode - GPIO active"],
     ["Current Browser URL", access.current_url || "Unavailable"],
     ["LAN Access URL", lanUrls.join(", ") || "Unavailable until network is connected"],
     ["Hotspot URL", access.hotspot_url || "http://192.168.4.1"],
@@ -294,6 +300,7 @@ function renderSetupPage() {
   if (controllerInput) {
     controllerInput.value = settings.controller_name || "HauntOS Controller";
   }
+  setChecked("#setup-mock-mode", Boolean(settings.mock_mode));
 
   renderNameFields("#setup-outputs", devices.outputs);
   renderNameFields("#setup-inputs", devices.inputs);
@@ -487,8 +494,12 @@ function renderInputSettings() {
   }
 
   const input = devices.inputs[selectedInputId];
-  setText("#input-settings-summary", `${input.enabled ? "Enabled" : "Disabled"} / ${cooldownText(input)}`);
+  setText(
+    "#input-settings-summary",
+    `${input.enabled ? "Enabled" : "Disabled"} / ${cooldownText(input)} / ${input.allow_concurrent ? "Concurrent" : "Exclusive"}`
+  );
   setChecked("#input-enabled", Boolean(input.enabled));
+  setChecked("#input-allow-concurrent", Boolean(input.allow_concurrent));
   setValue("#input-cooldown", Number(input.cooldown ?? 0));
 }
 
@@ -561,8 +572,8 @@ function tileCard(tile, index) {
   const actions = actionGroup(
     [
       actionButton(expandedTileIndex === index ? "Close" : "Edit", () => toggleTileEditor(index), "tile-action-button tile-edit-button"),
-      actionButton("↑", () => moveTile(index, -1), "tile-action-button tile-arrow-button", "Move tile up"),
-      actionButton("↓", () => moveTile(index, 1), "tile-action-button tile-arrow-button", "Move tile down"),
+      actionButton("Up", () => moveTile(index, -1), "tile-action-button tile-arrow-button", "Move tile up"),
+      actionButton("Dn", () => moveTile(index, 1), "tile-action-button tile-arrow-button", "Move tile down"),
       actionButton("Del", () => deleteTile(index), "tile-action-button tile-delete-button", "Delete tile"),
     ],
     "actions tile-actions"
@@ -591,7 +602,8 @@ function tileFields(tile, index) {
     }
     wrapper.append(
       selectField("File", tile.file || audioFiles[0] || "", audioFiles, (value) => updateTile(index, "file", value), (value) => value || "Upload audio first"),
-      selectField("Mode", tile.mode || "play_and_continue", ["play_and_continue", "wait_until_done"], (value) => updateTile(index, "mode", value))
+      selectField("Mode", tile.mode || "play_and_continue", ["play_and_continue", "wait_until_done"], (value) => updateTile(index, "mode", value)),
+      checkboxField("Allow Audio Overlap", Boolean(tile.allow_concurrent), (checked) => updateTile(index, "allow_concurrent", checked))
     );
   } else if (tile.type === "video") {
     if (!videoFiles.length) {
@@ -813,6 +825,14 @@ function bindSetupForm() {
     });
   }
 
+  const logoPreviewToggle = document.querySelector("#setup-logo-preview");
+  if (logoPreviewToggle) {
+    logoPreviewToggle.addEventListener("change", () => {
+      logoPreviewOffline = Boolean(logoPreviewToggle.checked);
+      renderConnectionLogo();
+    });
+  }
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -941,7 +961,7 @@ function defaultTile(type) {
     return { type: "wait", duration: 1 };
   }
   if (type === "sound") {
-    return { type: "sound", file: audioFiles[0] || "", mode: "play_and_continue" };
+    return { type: "sound", file: audioFiles[0] || "", mode: "play_and_continue", allow_concurrent: false };
   }
   if (type === "video") {
     return { type: "video", file: videoFiles[0] || "", mode: "play_and_continue" };
@@ -999,12 +1019,16 @@ function duplicateRoutine() {
 
 async function saveRoutines() {
   const inputName = inputOptionLabel(selectedInputId);
-  const data = await apiPost("/api/routines", routines);
-  routines = data.routines;
-  dirtyRoutineInputs.clear();
-  renderInputsPage();
-  showToast(`${inputName} routine saved`);
-  showMessage(`${inputName} routine saved`);
+  try {
+    const data = await apiPost("/api/routines", routines);
+    routines = data.routines;
+    dirtyRoutineInputs.clear();
+    renderInputsPage();
+    showToast(`${inputName} routine saved`);
+    showMessage(`${inputName} routine saved`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function saveInputSettings() {
@@ -1016,13 +1040,18 @@ async function saveInputSettings() {
   const input = devices.inputs[selectedInputId];
   const cooldownValue = Number(document.querySelector("#input-cooldown")?.value ?? input.cooldown ?? 0);
   input.enabled = Boolean(document.querySelector("#input-enabled")?.checked);
+  input.allow_concurrent = Boolean(document.querySelector("#input-allow-concurrent")?.checked);
   input.cooldown = Number.isFinite(cooldownValue) && cooldownValue >= 0 ? Math.round(cooldownValue) : 0;
 
-  const data = await apiPost("/api/devices", devices);
-  devices = data.devices;
-  renderInputsPage();
-  showToast(`${inputOptionLabel(selectedInputId)} settings saved`);
-  showMessage(`${inputOptionLabel(selectedInputId)} settings saved`);
+  try {
+    const data = await apiPost("/api/devices", devices);
+    devices = data.devices;
+    renderInputsPage();
+    showToast(`${inputOptionLabel(selectedInputId)} settings saved`);
+    showMessage(`${inputOptionLabel(selectedInputId)} settings saved`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function testSelectedRoutine() {
@@ -1031,11 +1060,19 @@ async function testSelectedRoutine() {
     return;
   }
   const inputName = inputOptionLabel(selectedInputId);
-  await apiPost("/api/run/custom", { routine_id: selectedInputId, tiles: getRoutineTiles(selectedInputId) });
-  showToast(`${inputName} test routine started`);
-  showMessage(`${inputName} test routine started`);
-  await refreshStatus();
-  renderRoutineEditor();
+  try {
+    await apiPost("/api/run/custom", {
+      routine_id: selectedInputId,
+      tiles: getRoutineTiles(selectedInputId),
+      allow_concurrent: Boolean(devices?.inputs?.[selectedInputId]?.allow_concurrent),
+    });
+    showToast(`${inputName} test routine started`);
+    showMessage(`${inputName} test routine started`);
+    await refreshStatus();
+    renderRoutineEditor();
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function stopEverything() {
@@ -1100,11 +1137,15 @@ async function runGuardedSystemAction(action) {
 
 async function runInput(inputId) {
   const inputName = inputOptionLabel(inputId);
-  await apiPost(`/api/run/input/${inputId}`);
-  await refreshStatus();
-  renderCurrentPage();
-  showToast(`${inputName} routine started`);
-  showMessage(`${inputName} started`);
+  try {
+    await apiPost(`/api/run/input/${inputId}`);
+    await refreshStatus();
+    renderCurrentPage();
+    showToast(`${inputName} routine started`);
+    showMessage(`${inputName} started`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function outputAction(outputId, action) {
@@ -1140,30 +1181,43 @@ async function uploadMedia(kind, form) {
 }
 
 async function deleteMedia(kind, filename) {
-  const data = await apiDelete(`/api/${kind}/${encodeURIComponent(filename)}`);
-  if (kind === "audio") {
-    audioFiles = data.audio || [];
-    renderAudioPage();
-  } else {
-    videoFiles = data.video || [];
-    renderVideoPage();
+  if (!window.confirm(`Delete "${filename}"? This cannot be undone.`)) {
+    return;
   }
-  showToast(`${filename} deleted`);
-  showMessage(`${filename} deleted`);
+
+  try {
+    const data = await apiDelete(`/api/${kind}/${encodeURIComponent(filename)}`);
+    if (kind === "audio") {
+      audioFiles = data.audio || [];
+      renderAudioPage();
+    } else {
+      videoFiles = data.video || [];
+      renderVideoPage();
+    }
+    showToast(`${filename} deleted`);
+    showMessage(`${filename} deleted`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function testMedia(kind, filename) {
   const tile = kind === "audio"
-    ? { type: "sound", file: filename, mode: "play_and_continue" }
+    ? { type: "sound", file: filename, mode: "play_and_continue", allow_concurrent: false }
     : { type: "video", file: filename, mode: "play_and_continue" };
-  await apiPost("/api/run/custom", { tiles: [tile] });
-  await refreshStatus();
-  showToast(`Testing ${filename}`);
-  showMessage(`Testing ${filename}`);
+  try {
+    await apiPost("/api/run/custom", { tiles: [tile] });
+    await refreshStatus();
+    showToast(`Testing ${filename}`);
+    showMessage(`Testing ${filename}`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function refreshStatus() {
   statusData = await apiGet("/api/status");
+  setControllerConnection(true);
   renderShellStatus();
 }
 
@@ -1182,7 +1236,9 @@ async function refreshRuntimeStatus() {
   const before = runtimeKey();
   try {
     await refreshStatus();
-  } catch (_error) {
+  } catch (error) {
+    setControllerConnection(false);
+    showMessage("Controller disconnected. Waiting for HauntOS to respond.", true);
     return;
   }
 
@@ -1194,6 +1250,43 @@ async function refreshRuntimeStatus() {
     } else if (page === "dashboard") {
       renderDashboard();
     }
+  }
+}
+
+function setControllerConnection(isOnline) {
+  controllerOnline = Boolean(isOnline);
+  renderConnectionLogo();
+
+  if (!controllerOnline) {
+    setText("#controller-online", "Offline");
+    setText("#shell-status", "OFFLINE");
+    setText("#shell-running", "Controller disconnected");
+    setText("#top-status", "Controller disconnected");
+    setText("#running-indicator", "Offline");
+    setText("#scheduler-indicator", "Schedule Unknown");
+    setText("#system-status", "Controller disconnected");
+  }
+}
+
+function renderConnectionLogo() {
+  const showOfflineLogo = !controllerOnline || logoPreviewOffline;
+  document.body.classList.toggle("controller-offline", showOfflineLogo);
+  document.body.classList.toggle("controller-online", controllerOnline);
+
+  const logo = document.querySelector(".brand-logo");
+  if (logo) {
+    const nextSrc = showOfflineLogo ? logo.dataset.offlineSrc : logo.dataset.onlineSrc;
+    if (nextSrc && logo.getAttribute("src") !== nextSrc) {
+      logo.setAttribute("src", nextSrc);
+    }
+    logo.alt = showOfflineLogo
+      ? "HauntPI Haunt Controller disconnected"
+      : "HauntPI Haunt Controller connected";
+  }
+
+  const badge = document.querySelector("#brand-status-badge");
+  if (badge) {
+    badge.textContent = showOfflineLogo ? "Offline" : "Connected";
   }
 }
 
@@ -1265,7 +1358,9 @@ async function apiUpload(path, formData) {
 async function handleResponse(response) {
   const data = await response.json();
   if (!response.ok || data.ok === false) {
-    throw new Error(data.error || `Request failed: ${response.status}`);
+    const error = new Error(data.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -1345,7 +1440,7 @@ function tileMeta(tile) {
   if (tile.type === "sound") {
     return [
       { label: "Mode", value: formatMode(tile.mode || "play_and_continue") },
-      { label: "Volume", value: "100%" },
+      { label: "Overlap", value: tile.allow_concurrent ? "Allowed" : "Stops audio" },
     ];
   }
   if (tile.type === "video") {
@@ -1400,11 +1495,11 @@ function focusTileControls(card) {
 function renderMediaLists() {
   setText("#audio-count", String(audioFiles.length));
   setText("#video-count", String(videoFiles.length));
-  renderMediaList("#audio-files-list", audioFiles, "No audio files");
-  renderMediaList("#video-files-list", videoFiles, "No video files");
+  renderMediaList("#audio-files-list", audioFiles, "No audio files", "audio");
+  renderMediaList("#video-files-list", videoFiles, "No video files", "video");
 }
 
-function renderMediaList(selector, files, emptyText) {
+function renderMediaList(selector, files, emptyText, kind) {
   const list = document.querySelector(selector);
   if (!list) {
     return;
@@ -1420,7 +1515,12 @@ function renderMediaList(selector, files, emptyText) {
   files.slice(0, 4).forEach((file) => {
     const row = document.createElement("div");
     row.className = "media-row";
-    row.innerHTML = `<span>${escapeHtml(file)}</span><button type="button">Play</button>`;
+    const name = document.createElement("span");
+    name.textContent = file;
+    row.append(
+      name,
+      actionButton("Play", () => testMedia(kind, file), "secondary-button compact-button")
+    );
     list.appendChild(row);
   });
 }
@@ -1475,6 +1575,12 @@ function showToast(text, isError = false) {
   }, 2600);
 }
 
+function showActionError(error) {
+  const message = error?.message || "Action failed";
+  showToast(message, true);
+  showMessage(message, true);
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -1495,7 +1601,8 @@ function routineStepShortText(inputId) {
 }
 
 function inputSummaryText(inputId) {
-  return `${routineStepShortText(inputId)} ready`;
+  const concurrentText = devices?.inputs?.[inputId]?.allow_concurrent ? "concurrent" : "exclusive";
+  return `${routineStepShortText(inputId)} ready / ${concurrentText}`;
 }
 
 function cooldownText(input) {
@@ -1541,12 +1648,13 @@ function setupPayload() {
     inputNames[input.dataset.deviceId] = input.value;
   });
 
-    return {
-      controller_name: document.querySelector("#setup-controller-name")?.value || "HauntOS Controller",
-      outputs: outputNames,
-      inputs: inputNames,
-    };
-  }
+  return {
+    controller_name: document.querySelector("#setup-controller-name")?.value || "HauntOS Controller",
+    mock_mode: Boolean(document.querySelector("#setup-mock-mode")?.checked),
+    outputs: outputNames,
+    inputs: inputNames,
+  };
+}
 
 function schedulerPayload() {
   const mode = document.querySelector("#scheduler-mode")?.value || "random";
