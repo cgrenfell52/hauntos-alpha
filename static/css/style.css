@@ -1212,34 +1212,75 @@ input {
   white-space: pre-wrap;
 }
 
-.setup-grid {
+.setup-wizard {
   display: grid;
   gap: 16px;
 }
 
-.setup-step {
-  position: relative;
+.setup-progress {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.setup-step .panel-title {
-  padding-right: 42px;
+.setup-progress-step {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: start;
+  min-width: 0;
+  padding: 12px;
+  text-align: left;
 }
 
-.step-number {
+.setup-progress-step span {
   align-items: center;
   background: rgba(139, 67, 255, 0.16);
   border: 1px solid rgba(176, 108, 255, 0.72);
   border-radius: 999px;
   color: var(--purple-2);
   display: inline-flex;
+  font-size: 0.82rem;
   font-weight: 900;
-  height: 32px;
+  height: 30px;
   justify-content: center;
-  position: absolute;
-  right: 16px;
-  top: 16px;
-  width: 32px;
-  pointer-events: none;
+  width: 30px;
+}
+
+.setup-progress-step strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setup-progress-step.active {
+  background: linear-gradient(135deg, #5521bd, #8b43ff);
+  border-color: #a374ff;
+  color: var(--text);
+}
+
+.setup-progress-step.complete {
+  border-color: rgba(117, 227, 94, 0.55);
+  color: var(--green);
+}
+
+.setup-progress-step:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.setup-wizard-step {
+  display: none;
+}
+
+.setup-wizard-step.active {
+  display: grid;
+  gap: 14px;
 }
 
 .setup-fields {
@@ -1248,6 +1289,20 @@ input {
 
 .setup-actions-panel {
   background: linear-gradient(180deg, rgba(41, 30, 70, 0.68), rgba(13, 18, 25, 0.96));
+}
+
+.setup-wizard-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.setup-wizard-actions [hidden] {
+  display: none;
+}
+
+.setup-review-list {
+  margin-top: 0;
 }
 
 .scheduler-layout {
@@ -1500,6 +1555,7 @@ input {
 
   .control-grid,
   .setup-fields,
+  .setup-progress,
   .scheduler-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1527,6 +1583,7 @@ input {
 
   .header-actions,
   .actions,
+  .setup-wizard-actions,
   .status-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1541,6 +1598,7 @@ input {
   .tile-buttons,
   .control-grid,
   .setup-fields,
+  .setup-progress,
   .scheduler-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1578,9 +1636,11 @@ input {
   .tile-meta,
   .control-grid,
   .setup-fields,
+  .setup-progress,
   .scheduler-fields,
   .header-actions,
   .actions,
+  .setup-wizard-actions,
   .status-actions {
     grid-template-columns: 1fr;
   }

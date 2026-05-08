@@ -16,6 +16,8 @@ let lastRuntimeKey = "";
 let statusPollTimer = null;
 let controllerOnline = true;
 let logoPreviewOffline = false;
+const setupWizardSteps = ["controller", "outputs", "inputs", "review"];
+let setupWizardStep = "controller";
 
 document.addEventListener("DOMContentLoaded", () => {
   bindShellActions();
@@ -304,7 +306,101 @@ function renderSetupPage() {
 
   renderNameFields("#setup-outputs", devices.outputs);
   renderNameFields("#setup-inputs", devices.inputs);
-  renderSetupSelect("#setup-test-output-select", Object.keys(devices.outputs), devices.outputs);
+  renderSetupWizard();
+}
+
+function renderSetupWizard() {
+  const currentIndex = setupWizardSteps.indexOf(setupWizardStep);
+  const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+  setupWizardStep = setupWizardSteps[safeIndex];
+
+  document.querySelectorAll("[data-setup-step]").forEach((step) => {
+    const active = step.dataset.setupStep === setupWizardStep;
+    step.classList.toggle("active", active);
+    step.setAttribute("aria-hidden", active ? "false" : "true");
+  });
+
+  updateSetupWizardNav(safeIndex);
+
+  if (setupWizardStep === "review") {
+    renderSetupReview();
+  }
+}
+
+function updateSetupWizardNav(safeIndex = setupWizardSteps.indexOf(setupWizardStep)) {
+  document.querySelectorAll("[data-setup-progress]").forEach((button) => {
+    const stepName = button.dataset.setupProgress;
+    const index = setupWizardSteps.indexOf(stepName);
+    const active = stepName === setupWizardStep;
+    button.classList.toggle("active", active);
+    button.classList.toggle("complete", index >= 0 && index < safeIndex);
+    if (active) {
+      button.setAttribute("aria-current", "step");
+    } else {
+      button.removeAttribute("aria-current");
+    }
+    button.disabled = !canUseSetupStep(index);
+  });
+
+  const backButton = document.querySelector("[data-action='setup-back']");
+  const nextButton = document.querySelector("[data-action='setup-next']");
+  const saveButton = document.querySelector("[data-action='setup-save']");
+  const isReview = setupWizardStep === "review";
+
+  if (backButton) {
+    backButton.disabled = safeIndex === 0;
+  }
+  if (nextButton) {
+    nextButton.hidden = isReview;
+    nextButton.disabled = setupWizardStep === "controller" && !setupControllerName();
+  }
+  if (saveButton) {
+    saveButton.hidden = !isReview;
+  }
+}
+
+function canUseSetupStep(index) {
+  if (index < 0) {
+    return false;
+  }
+  if (index === 0) {
+    return true;
+  }
+  return Boolean(setupControllerName());
+}
+
+function setupControllerName() {
+  return (document.querySelector("#setup-controller-name")?.value || "").trim();
+}
+
+function goToSetupStep(stepName) {
+  const nextIndex = setupWizardSteps.indexOf(stepName);
+  if (!canUseSetupStep(nextIndex)) {
+    showMessage("Controller name is required before continuing.", true);
+    return;
+  }
+
+  setupWizardStep = setupWizardSteps[nextIndex];
+  renderSetupWizard();
+}
+
+function renderSetupReview() {
+  const list = document.querySelector("#setup-review-list");
+  if (!list) {
+    return;
+  }
+
+  const payload = setupPayload();
+  const outputCount = Object.keys(payload.outputs).length;
+  const inputCount = Object.keys(payload.inputs).length;
+
+  list.innerHTML = "";
+  [
+    ["Controller", payload.controller_name],
+    ["Mode", payload.mock_mode ? "Mock mode" : "Hardware GPIO mode"],
+    ["Outputs Named", `${outputCount} outputs`],
+    ["Inputs Named", `${inputCount} inputs`],
+  ].forEach(([label, value]) => list.appendChild(descriptionRow(label, value)));
 }
 
 async function renderSchedulerPage() {
@@ -815,16 +911,6 @@ function bindSetupForm() {
     return;
   }
 
-  const testButton = document.querySelector("#setup-test-output");
-  if (testButton) {
-    testButton.addEventListener("click", async () => {
-      const outputId = document.querySelector("#setup-test-output-select")?.value || "OUT1";
-      await outputAction(outputId, "pulse");
-      const outputName = devices?.outputs?.[outputId]?.name || outputId;
-      showToast(`${outputName} test pulse sent`);
-    });
-  }
-
   const logoPreviewToggle = document.querySelector("#setup-logo-preview");
   if (logoPreviewToggle) {
     logoPreviewToggle.addEventListener("change", () => {
@@ -833,8 +919,56 @@ function bindSetupForm() {
     });
   }
 
+  const controllerInput = document.querySelector("#setup-controller-name");
+  if (controllerInput) {
+    ["input", "change", "keyup"].forEach((eventName) => {
+      controllerInput.addEventListener(eventName, () => {
+        renderSetupWizard();
+        showMessage("");
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-setup-progress]").forEach((button) => {
+    button.addEventListener("click", () => goToSetupStep(button.dataset.setupProgress));
+  });
+
+  const backButton = document.querySelector("[data-action='setup-back']");
+  if (backButton) {
+    backButton.addEventListener("click", () => {
+      const index = setupWizardSteps.indexOf(setupWizardStep);
+      goToSetupStep(setupWizardSteps[Math.max(0, index - 1)]);
+    });
+  }
+
+  const nextButton = document.querySelector("[data-action='setup-next']");
+  if (nextButton) {
+    nextButton.addEventListener("click", () => {
+      if (!setupControllerName()) {
+        renderSetupWizard();
+        showMessage("Controller name is required before continuing.", true);
+        return;
+      }
+      const index = setupWizardSteps.indexOf(setupWizardStep);
+      goToSetupStep(setupWizardSteps[Math.min(setupWizardSteps.length - 1, index + 1)]);
+    });
+  }
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!setupControllerName()) {
+      setupWizardStep = "controller";
+      renderSetupWizard();
+      showMessage("Controller name is required before saving setup.", true);
+      return;
+    }
+    if (setupWizardStep !== "review") {
+      const index = setupWizardSteps.indexOf(setupWizardStep);
+      goToSetupStep(setupWizardSteps[Math.min(setupWizardSteps.length - 1, index + 1)]);
+      return;
+    }
+
+    renderSetupWizard();
     try {
       const payload = setupPayload();
       const data = await apiPost("/api/setup", payload);
@@ -845,6 +979,7 @@ function bindSetupForm() {
       renderSetupPage();
       showToast("Setup saved");
       showMessage("Setup saved");
+      window.location.href = "/";
     } catch (error) {
       showToast(error.message, true);
       showMessage(error.message, true);
@@ -1649,7 +1784,7 @@ function setupPayload() {
   });
 
   return {
-    controller_name: document.querySelector("#setup-controller-name")?.value || "HauntOS Controller",
+    controller_name: setupControllerName(),
     mock_mode: Boolean(document.querySelector("#setup-mock-mode")?.checked),
     outputs: outputNames,
     inputs: inputNames,

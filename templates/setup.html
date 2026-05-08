@@ -7,19 +7,37 @@
   <div>
     <span class="eyebrow">First Run</span>
     <h1>Setup Wizard</h1>
-    <p class="muted">Name the controller, label devices, and test an output.</p>
+    <p class="muted">Name the controller, choose mock mode, label devices, and review before saving.</p>
   </div>
   <div class="header-actions">
     <button class="ghost-button subtle-button" type="button" data-action="refresh">Refresh</button>
   </div>
 </section>
 
-<form id="setup-form" class="setup-grid">
-  <section class="panel setup-step">
-    <span class="step-number">1</span>
+<form id="setup-form" class="setup-wizard">
+  <nav class="setup-progress" aria-label="Setup progress">
+    <button class="setup-progress-step" type="button" data-setup-progress="controller" aria-current="step">
+      <span>1</span>
+      <strong>Controller</strong>
+    </button>
+    <button class="setup-progress-step" type="button" data-setup-progress="outputs">
+      <span>2</span>
+      <strong>Outputs</strong>
+    </button>
+    <button class="setup-progress-step" type="button" data-setup-progress="inputs">
+      <span>3</span>
+      <strong>Inputs</strong>
+    </button>
+    <button class="setup-progress-step" type="button" data-setup-progress="review">
+      <span>4</span>
+      <strong>Review</strong>
+    </button>
+  </nav>
+
+  <section class="panel setup-wizard-step active" data-setup-step="controller">
     <div class="panel-title">
-      <h2>Name Controller</h2>
-      <span>Shown in status panels</span>
+      <h2>Controller</h2>
+      <span>Name and mode</span>
     </div>
     <label class="field">
       <span>Controller Name</span>
@@ -41,8 +59,7 @@
     </label>
   </section>
 
-  <section class="panel setup-step">
-    <span class="step-number">2</span>
+  <section class="panel setup-wizard-step" data-setup-step="outputs">
     <div class="panel-title">
       <h2>Name Outputs</h2>
       <span>8 output names</span>
@@ -50,8 +67,7 @@
     <div id="setup-outputs" class="field-grid setup-fields"></div>
   </section>
 
-  <section class="panel setup-step">
-    <span class="step-number">3</span>
+  <section class="panel setup-wizard-step" data-setup-step="inputs">
     <div class="panel-title">
       <h2>Name Inputs</h2>
       <span>4 input names</span>
@@ -59,19 +75,18 @@
     <div id="setup-inputs" class="field-grid setup-fields"></div>
   </section>
 
-  <section class="panel setup-actions-panel">
+  <section class="panel setup-wizard-step setup-actions-panel" data-setup-step="review">
     <div class="panel-title">
-      <h2>Test And Save</h2>
+      <h2>Review &amp; Save</h2>
       <span>Finish setup</span>
     </div>
-    <label class="field setup-test-field">
-      <span>Output To Test</span>
-      <select id="setup-test-output-select"></select>
-    </label>
-    <div class="header-actions">
-      <button class="secondary-button" type="button" id="setup-test-output">Test Output</button>
-      <button class="primary-purple" type="submit">Save Setup</button>
-    </div>
+    <dl id="setup-review-list" class="setup-review-list system-list expanded"></dl>
   </section>
+
+  <div class="setup-wizard-actions">
+    <button class="secondary-button" type="button" data-action="setup-back">Back</button>
+    <button class="primary-purple" type="button" data-action="setup-next">Next</button>
+    <button class="primary-purple" type="submit" data-action="setup-save">Save Setup</button>
+  </div>
 </form>
 {% endblock %}
