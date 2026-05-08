@@ -200,6 +200,7 @@ body.controller-offline .brand-status-badge {
 .show-card,
 .panel,
 .topbar,
+.cockpit-card,
 .status-tile {
   background: linear-gradient(180deg, rgba(26, 32, 42, 0.94), rgba(13, 18, 25, 0.96));
   border: 1px solid var(--line);
@@ -215,6 +216,7 @@ body.controller-offline .brand-status-badge {
 }
 
 .show-card strong,
+.cockpit-card strong,
 .status-tile strong {
   color: var(--green);
   font-size: 1.45rem;
@@ -222,6 +224,7 @@ body.controller-offline .brand-status-badge {
 }
 
 .show-card > span:last-of-type,
+.cockpit-card p,
 .status-tile p {
   color: var(--muted);
   font-size: 0.92rem;
@@ -351,11 +354,39 @@ body.controller-offline .brand-status-badge {
   color: var(--muted);
 }
 
-.dashboard-hero {
+.dashboard-cockpit {
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.6fr);
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(4, minmax(150px, 0.7fr));
   margin-bottom: 16px;
+}
+
+.cockpit-card {
+  align-content: center;
+  display: grid;
+  gap: 10px;
+  min-height: 134px;
+  padding: 16px;
+}
+
+.cockpit-card.compact strong {
+  color: var(--text);
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+
+.cockpit-primary {
+  min-height: 156px;
+}
+
+.cockpit-primary strong {
+  font-size: clamp(2.2rem, 4vw, 4rem);
+}
+
+.dashboard-primary-action {
+  background: linear-gradient(135deg, #267322, #4caf3f);
+  min-height: 54px;
+  min-width: 168px;
 }
 
 .status-tile {
@@ -373,7 +404,13 @@ body.controller-offline .brand-status-badge {
 }
 
 .panel + .panel,
-.panel + .dashboard-hero {
+.panel + .dashboard-cockpit {
+  margin-top: 16px;
+}
+
+.dashboard-active-panel,
+.dashboard-trigger-panel,
+.dashboard-output-panel {
   margin-top: 16px;
 }
 
@@ -416,6 +453,98 @@ body.controller-offline .brand-status-badge {
   align-content: center;
   min-height: 104px;
   text-align: left;
+}
+
+.dashboard-trigger-button {
+  gap: 12px;
+  min-height: 132px;
+  padding: 16px;
+}
+
+.dashboard-trigger-button:disabled,
+.dashboard-trigger-disabled {
+  cursor: wait;
+  filter: saturate(0.7);
+  opacity: 0.72;
+}
+
+.dashboard-trigger-meta {
+  color: var(--muted);
+}
+
+.dashboard-trigger-badges,
+.active-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.mini-badge {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 900;
+  min-height: 27px;
+  padding: 5px 8px;
+}
+
+.mini-badge.good {
+  background: rgba(117, 227, 94, 0.12);
+  border-color: rgba(117, 227, 94, 0.5);
+  color: var(--green);
+}
+
+.mini-badge.muted {
+  color: #ffb071;
+}
+
+.mini-badge.purple {
+  background: rgba(139, 67, 255, 0.16);
+  border-color: rgba(176, 108, 255, 0.62);
+  color: var(--purple-2);
+}
+
+.active-runs-list {
+  display: grid;
+  gap: 10px;
+}
+
+.active-run-card {
+  align-items: center;
+  background: linear-gradient(180deg, rgba(117, 227, 94, 0.1), rgba(255, 255, 255, 0.035));
+  border: 1px solid rgba(117, 227, 94, 0.42);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 13px;
+}
+
+.active-run-card div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.active-run-card span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dashboard-empty-state,
+.dashboard-output-empty {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.dashboard-output-empty[hidden] {
+  display: none;
 }
 
 .trigger-button span {
@@ -642,6 +771,7 @@ body:not(.show-armed) #dashboard-status-word {
 }
 
 .primary-button:hover,
+.dashboard-primary-action:hover,
 .primary-purple:hover,
 .secondary-button:hover,
 .trigger-button:hover,
@@ -1217,6 +1347,12 @@ input {
   gap: 16px;
 }
 
+.dashboard-output-on {
+  background: linear-gradient(180deg, rgba(117, 227, 94, 0.18), rgba(117, 227, 94, 0.055));
+  border-color: rgba(117, 227, 94, 0.72);
+  box-shadow: 0 0 24px rgba(117, 227, 94, 0.12);
+}
+
 .setup-progress {
   display: grid;
   gap: 10px;
@@ -1506,11 +1642,12 @@ input {
   }
 
   .global-stop-button {
+    font-size: 0.9rem;
     min-height: 50px;
     min-width: 0;
     right: 14px;
     top: 14px;
-    width: min(220px, calc(100vw - 28px));
+    width: min(300px, calc(100vw - 28px));
   }
 
   .brand {
@@ -1536,6 +1673,24 @@ input {
     margin-left: 0;
   }
 
+  body[data-page="dashboard"] .app-shell {
+    display: flex;
+    flex-direction: column;
+  }
+
+  body[data-page="dashboard"] .content-shell {
+    order: 1;
+  }
+
+  body[data-page="dashboard"] .sidebar {
+    order: 2;
+    padding-top: 16px;
+  }
+
+  body[data-page="dashboard"] .page {
+    padding-top: 82px;
+  }
+
   .topbar {
     display: none;
   }
@@ -1554,6 +1709,7 @@ input {
   }
 
   .control-grid,
+  .dashboard-cockpit,
   .setup-fields,
   .setup-progress,
   .scheduler-fields {
@@ -1592,6 +1748,7 @@ input {
 
   .button-grid,
   .state-grid,
+  .dashboard-cockpit,
   .dashboard-hero,
   .device-list.compact,
   .tile-meta,
@@ -1621,6 +1778,10 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .active-run-card {
+    grid-template-columns: 1fr;
+  }
+
   .field-grid {
     grid-template-columns: 1fr;
   }
@@ -1630,6 +1791,7 @@ input {
   .nav,
   .button-grid,
   .state-grid,
+  .dashboard-cockpit,
   .dashboard-hero,
   .device-list.compact,
   .tile-buttons,

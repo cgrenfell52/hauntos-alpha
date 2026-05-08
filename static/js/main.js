@@ -12,6 +12,7 @@ let systemInfo = null;
 let recentLogs = [];
 let schedulerData = null;
 let dirtyRoutineInputs = new Set();
+const pendingDashboardInputs = new Set();
 let lastRuntimeKey = "";
 let statusPollTimer = null;
 let controllerOnline = true;
@@ -50,12 +51,16 @@ async function loadPage() {
 
     const needsAudio = page === "inputs" || page === "audio";
     const needsVideo = page === "inputs" || page === "video";
+    const needsDashboardScheduler = page === "dashboard";
 
     if (needsAudio) {
       requests.push(apiGet("/api/audio"));
     }
     if (needsVideo) {
       requests.push(apiGet("/api/video"));
+    }
+    if (needsDashboardScheduler) {
+      requests.push(apiGet("/api/scheduler"));
     }
 
     const responses = await Promise.all(requests);
@@ -72,6 +77,10 @@ async function loadPage() {
     }
     if (needsVideo) {
       videoFiles = responses[responseIndex].video || [];
+      responseIndex += 1;
+    }
+    if (needsDashboardScheduler) {
+      schedulerData = responses[responseIndex];
     }
 
     renderShellStatus();
@@ -119,30 +128,65 @@ function renderShellStatus() {
   setText("#running-indicator", statusData.running ? "Routine Running" : "Idle");
   setText("#scheduler-indicator", schedulerEnabled ? "Schedule On" : "Schedule Off");
   setText("#dashboard-status-word", readyText);
-  setText("#dashboard-status-detail", `Controller Online / Version ${version}`);
+  setText("#dashboard-status-detail", detailText);
+  setText("#dashboard-controller-status", controllerOnline ? "Online" : "Offline");
+  setText("#dashboard-controller-detail", `Version ${version}`);
+  setText("#dashboard-mode-status", settings.mock_mode ? "Mock mode" : "Hardware GPIO");
+  setText("#dashboard-mode-detail", settings.mock_mode ? "Simulated I/O" : "GPIO active");
+  const activeRunCount = Array.isArray(statusData.active_runs) ? statusData.active_runs.length : 0;
+  setText("#dashboard-active-count", `${activeRunCount} active`);
+  setText("#dashboard-active-detail", activeRunCount ? "Routine activity live" : "No active routines");
   setText("#sidebar-version", version);
   renderShowButtons(showArmed);
 }
 
 function renderDashboard() {
+  const settings = statusData?.settings || {};
+  const activeRuns = Array.isArray(statusData?.active_runs) ? statusData.active_runs : [];
+  const schedulerText = dashboardSchedulerText();
+  const outputStates = statusData?.outputs || {};
+  const outputOnCount = Object.values(outputStates).filter(Boolean).length;
+
   setText("#system-status", statusData.running ? "Routine running" : "Ready");
   setText("#dashboard-input-summary", `${Object.keys(devices.inputs).length} manual triggers`);
   setText("#dashboard-output-summary", outputSummaryText());
+  setText("#dashboard-controller-status", controllerOnline ? "Online" : "Offline");
+  setText("#dashboard-mode-status", settings.mock_mode ? "Mock mode" : "Hardware GPIO");
+  setText("#dashboard-mode-detail", settings.mock_mode ? "Simulated I/O" : "GPIO active");
+  setText("#dashboard-scheduler-status", schedulerText.status);
+  setText("#dashboard-scheduler-detail", schedulerText.detail);
+  setText("#dashboard-active-count", `${activeRuns.length} active`);
+  setText("#dashboard-active-detail", activeRuns.length ? "Routine activity live" : "No active routines");
+  setText("#dashboard-active-summary", activeRuns.length ? `${activeRuns.length} running now` : "No active routines");
+  renderDashboardActiveRuns(activeRuns);
 
   const inputs = document.querySelector("#dashboard-inputs");
   if (inputs) {
     inputs.innerHTML = "";
     Object.entries(devices.inputs).forEach(([inputId, input]) => {
       const button = document.createElement("button");
-      button.className = "trigger-button";
+      const isPending = pendingDashboardInputs.has(inputId);
+      button.className = `trigger-button dashboard-trigger-button ${isPending ? "dashboard-trigger-disabled" : ""}`;
       button.type = "button";
+      button.disabled = isPending;
       button.innerHTML = `
         <strong>${escapeHtml(input.name)}</strong>
-        <span>${routineStepText(inputId)} ready</span>
+        <span class="dashboard-trigger-meta">${escapeHtml(routineStepText(inputId))}</span>
+        <span class="dashboard-trigger-badges">
+          <span class="mini-badge ${input.enabled ? "good" : "muted"}">${input.enabled ? "Enabled" : "Disabled"}</span>
+          <span class="mini-badge">${escapeHtml(cooldownText(input))}</span>
+          <span class="mini-badge ${input.allow_concurrent ? "purple" : ""}">${input.allow_concurrent ? "Concurrent" : "Exclusive"}</span>
+        </span>
       `;
       button.addEventListener("click", () => runInput(inputId));
       inputs.appendChild(button);
     });
+  }
+
+  const outputEmpty = document.querySelector("#dashboard-output-empty");
+  if (outputEmpty) {
+    outputEmpty.hidden = outputOnCount > 0;
+    outputEmpty.textContent = "All outputs off";
   }
 
   const outputs = document.querySelector("#dashboard-outputs");
@@ -152,6 +196,78 @@ function renderDashboard() {
       outputs.appendChild(outputStateCard(outputId, output));
     });
   }
+}
+
+function renderDashboardActiveRuns(activeRuns) {
+  const list = document.querySelector("#dashboard-active-runs");
+  if (!list) {
+    return;
+  }
+
+  list.innerHTML = "";
+  if (!activeRuns.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted dashboard-empty-state";
+    empty.textContent = "No active routines.";
+    list.appendChild(empty);
+    return;
+  }
+
+  activeRuns.forEach((run) => {
+    const card = document.createElement("article");
+    card.className = "active-run-card";
+    const stepText = run.tile_index === null || run.tile_index === undefined
+      ? "Starting"
+      : `Step ${Number(run.tile_index) + 1}`;
+    const routineName = run.routine_id ? inputOptionLabel(run.routine_id) : "Custom routine";
+    card.innerHTML = `
+      <div>
+        <strong>${escapeHtml(routineName)}</strong>
+        <span>${escapeHtml(dashboardTileSummary(run))}</span>
+      </div>
+      <div class="active-run-meta">
+        <span class="mini-badge">${escapeHtml(stepText)}</span>
+        <span class="mini-badge ${run.allow_concurrent ? "purple" : ""}">${run.allow_concurrent ? "Concurrent" : "Exclusive"}</span>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function dashboardSchedulerText() {
+  if (!schedulerData || !schedulerData.settings) {
+    return { status: "Schedule Unknown", detail: "Waiting for scheduler" };
+  }
+
+  const settings = schedulerData.settings;
+  if (!settings.enabled) {
+    return { status: "Schedule Off", detail: "No automatic runs" };
+  }
+  if (!schedulerData.armed) {
+    return { status: "Waiting for Show Armed", detail: "Start Show to allow scheduled runs" };
+  }
+  if (!schedulerData.active_hours) {
+    return { status: "Outside Active Hours", detail: `${settings.start_time} to ${settings.end_time}` };
+  }
+  if (schedulerData.next_run_in !== null && schedulerData.next_run_in !== undefined) {
+    return { status: `Next Run in ${schedulerData.next_run_in}s`, detail: dashboardSchedulerRoutineText(settings.routine) };
+  }
+  return { status: "Ready", detail: dashboardSchedulerRoutineText(settings.routine) };
+}
+
+function dashboardSchedulerRoutineText(routineId) {
+  if (routineId === "random") {
+    return "Random routine";
+  }
+  return inputOptionLabel(routineId || "IN1");
+}
+
+function dashboardTileSummary(run) {
+  const tile = run?.tile;
+  if (!tile) {
+    return "Starting routine";
+  }
+  return `${tileTitle(tile)} / ${tileSummary(tile)}`;
 }
 
 function renderShowButtons(showArmed) {
@@ -778,7 +894,7 @@ function fieldShell(label) {
 
 function outputStateCard(outputId, output) {
   const card = document.createElement("article");
-  card.className = "state-card";
+  card.className = `state-card ${isOutputOn(outputId) ? "dashboard-output-on" : ""}`;
   card.append(deviceIcon("OUT"), deviceInfo(output.name, isOutputOn(outputId) ? "Currently on" : "Currently off"), outputStatePill(outputId));
   return card;
 }
@@ -1213,6 +1329,7 @@ async function testSelectedRoutine() {
 async function stopEverything() {
   await apiPost("/api/stop");
   await refreshStatus();
+  await refreshDashboardScheduler();
   renderCurrentPage();
   showToast("STOP sent. Show disarmed, outputs and media stopped.");
   showMessage("Stopped and disarmed");
@@ -1223,6 +1340,7 @@ async function toggleShowMode() {
   if (showArmed) {
     await apiPost("/api/show/stop");
     await refreshStatus();
+    await refreshDashboardScheduler();
     renderCurrentPage();
     showToast("Show stopped gracefully. Active routines can finish.");
     showMessage("Show stopped gracefully");
@@ -1231,6 +1349,7 @@ async function toggleShowMode() {
 
   await apiPost("/api/show/start");
   await refreshStatus();
+  await refreshDashboardScheduler();
   renderCurrentPage();
   showToast("Show armed. Inputs and scheduler can trigger routines.");
   showMessage("Show armed");
@@ -1271,15 +1390,30 @@ async function runGuardedSystemAction(action) {
 }
 
 async function runInput(inputId) {
+  if (pendingDashboardInputs.has(inputId)) {
+    return;
+  }
+
   const inputName = inputOptionLabel(inputId);
+  if (page === "dashboard") {
+    pendingDashboardInputs.add(inputId);
+    renderDashboard();
+  }
+
   try {
     await apiPost(`/api/run/input/${inputId}`);
     await refreshStatus();
+    await refreshDashboardScheduler();
     renderCurrentPage();
     showToast(`${inputName} routine started`);
     showMessage(`${inputName} started`);
   } catch (error) {
     showActionError(error);
+  } finally {
+    if (page === "dashboard") {
+      pendingDashboardInputs.delete(inputId);
+      renderDashboard();
+    }
   }
 }
 
@@ -1356,6 +1490,12 @@ async function refreshStatus() {
   renderShellStatus();
 }
 
+async function refreshDashboardScheduler() {
+  if (page === "dashboard") {
+    schedulerData = await apiGet("/api/scheduler");
+  }
+}
+
 function startStatusPolling() {
   if (statusPollTimer) {
     return;
@@ -1371,6 +1511,7 @@ async function refreshRuntimeStatus() {
   const before = runtimeKey();
   try {
     await refreshStatus();
+    await refreshDashboardScheduler();
   } catch (error) {
     setControllerConnection(false);
     showMessage("Controller disconnected. Waiting for HauntOS to respond.", true);
@@ -1378,6 +1519,10 @@ async function refreshRuntimeStatus() {
   }
 
   const after = runtimeKey();
+  if (page === "dashboard") {
+    renderDashboard();
+    return;
+  }
   if (after !== before || after !== lastRuntimeKey) {
     lastRuntimeKey = after;
     if (page === "inputs") {
@@ -1400,6 +1545,10 @@ function setControllerConnection(isOnline) {
     setText("#running-indicator", "Offline");
     setText("#scheduler-indicator", "Schedule Unknown");
     setText("#system-status", "Controller disconnected");
+    setText("#dashboard-controller-status", "Offline");
+    setText("#dashboard-controller-detail", "API disconnected");
+    setText("#dashboard-scheduler-status", "Schedule Unknown");
+    setText("#dashboard-scheduler-detail", "Waiting for controller");
   }
 }
 

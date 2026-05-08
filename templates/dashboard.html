@@ -14,23 +14,50 @@
   </div>
 </section>
 
-<section class="dashboard-hero">
-  <article class="status-tile">
+<section class="dashboard-cockpit" aria-label="Operator cockpit">
+  <article class="cockpit-card cockpit-primary">
     <span class="eyebrow">Show Status</span>
     <strong id="dashboard-status-word">READY</strong>
     <p id="dashboard-status-detail">Controller online</p>
     <div class="status-actions">
-      <button class="primary-button" type="button" data-action="start-show">Start Show</button>
+      <button class="dashboard-primary-action" type="button" data-action="start-show">Start Show</button>
     </div>
   </article>
-  <article class="status-tile compact">
+
+  <article class="cockpit-card compact">
     <span class="eyebrow">Controller</span>
-    <strong>Online</strong>
-    <p>Version v0.1.0-alpha</p>
+    <strong id="dashboard-controller-status">Online</strong>
+    <p id="dashboard-controller-detail">Version v0.1.0-alpha</p>
+  </article>
+
+  <article class="cockpit-card compact">
+    <span class="eyebrow">Mode</span>
+    <strong id="dashboard-mode-status">Mock mode</strong>
+    <p id="dashboard-mode-detail">Simulated I/O</p>
+  </article>
+
+  <article class="cockpit-card compact">
+    <span class="eyebrow">Scheduler</span>
+    <strong id="dashboard-scheduler-status">Schedule Off</strong>
+    <p id="dashboard-scheduler-detail">No automatic runs</p>
+  </article>
+
+  <article class="cockpit-card compact">
+    <span class="eyebrow">Active</span>
+    <strong id="dashboard-active-count">0 active</strong>
+    <p id="dashboard-active-detail">No active routines</p>
   </article>
 </section>
 
-<section class="panel">
+<section class="panel dashboard-active-panel">
+  <div class="panel-title">
+    <h2>Active Routines</h2>
+    <span id="dashboard-active-summary">Live routine activity</span>
+  </div>
+  <div id="dashboard-active-runs" class="active-runs-list"></div>
+</section>
+
+<section class="panel dashboard-trigger-panel">
   <div class="panel-title">
     <h2>Input Triggers</h2>
     <span id="dashboard-input-summary">Manual routine starts</span>
@@ -38,11 +65,12 @@
   <div id="dashboard-inputs" class="button-grid"></div>
 </section>
 
-<section class="panel">
+<section class="panel dashboard-output-panel">
   <div class="panel-title">
     <h2>Output States</h2>
     <span id="dashboard-output-summary">Live output state</span>
   </div>
-  <div id="dashboard-outputs" class="state-grid"></div>
+  <p id="dashboard-output-empty" class="dashboard-output-empty">All outputs off</p>
+  <div id="dashboard-outputs" class="state-grid dashboard-output-strip"></div>
 </section>
 {% endblock %}
