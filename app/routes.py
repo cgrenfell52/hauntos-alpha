@@ -8,12 +8,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Flask, jsonify, redirect, render_template, request, send_file
+from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
 try:
     from app import (
         app_log,
+        auth,
         audio_controller,
         config_store,
         gpio_controller,
@@ -25,6 +26,7 @@ try:
     )
 except ImportError:  # Allows running this file directly from the app folder.
     import app_log  # type: ignore
+    import auth  # type: ignore
     import audio_controller  # type: ignore
     import config_store  # type: ignore
     import gpio_controller  # type: ignore
@@ -36,10 +38,51 @@ except ImportError:  # Allows running this file directly from the app folder.
 
 
 LOGGER = logging.getLogger(__name__)
+PUBLIC_API_GETS = {"/api/status"}
 
 
 def register_routes(app: Flask) -> None:
     """Register API routes on the Flask app."""
+
+    @app.before_request
+    def require_operator_session():
+        return _auth_gate()
+
+    @app.get("/login")
+    def login_page():
+        if not _operator_auth_enabled() or _operator_authenticated():
+            return redirect(_safe_next_url(request.args.get("next")))
+        return render_template("login.html", active_page="login")
+
+    @app.get("/api/auth/status")
+    def auth_status():
+        return _json_ok(
+            {
+                "auth_enabled": _operator_auth_enabled(),
+                "authenticated": _operator_authenticated(),
+            }
+        )
+
+    @app.post("/api/auth/login")
+    def auth_login():
+        data = _json_body()
+        if data is None:
+            return _json_error("Request body must be a JSON object", 400)
+
+        pin = str(data.get("pin", ""))
+        if not pin:
+            return _json_error("Operator PIN is required", 400)
+
+        if not auth.verify_pin(pin, config_store.get_settings()):
+            return _json_error("Invalid operator PIN", 401)
+
+        session["operator_authenticated"] = True
+        return _json_ok({"authenticated": True})
+
+    @app.post("/api/auth/logout")
+    def auth_logout():
+        session.pop("operator_authenticated", None)
+        return _json_ok({"authenticated": False})
 
     @app.get("/")
     def dashboard_page():
@@ -96,7 +139,7 @@ def register_routes(app: Flask) -> None:
                 "routine": routine_engine.get_runtime_status(),
                 "active_runs": routine_engine.get_active_runs(),
                 "outputs": gpio_controller.get_output_states(),
-                "settings": config_store.get_settings(),
+                "settings": _settings_for_response(config_store.get_settings()),
             }
         )
 
@@ -225,7 +268,7 @@ def register_routes(app: Flask) -> None:
         return _json_ok(
             {
                 "running": routine_engine.is_running(),
-                "settings": settings,
+                "settings": _settings_for_response(settings),
                 "show_armed": True,
             }
         )
@@ -236,7 +279,7 @@ def register_routes(app: Flask) -> None:
         return _json_ok(
             {
                 "running": routine_engine.is_running(),
-                "settings": settings,
+                "settings": _settings_for_response(settings),
                 "show_armed": False,
                 "graceful": True,
             }
@@ -263,6 +306,8 @@ def register_routes(app: Flask) -> None:
 
         if duration < 0:
             return _json_error("duration must be greater than or equal to 0", 400)
+        if duration > gpio_controller.MAX_MANUAL_PULSE_SECONDS:
+            return _json_error("Pulse duration must be 30 seconds or less", 400)
 
         return _run_output_action(output_id, "pulse", duration)
 
@@ -339,11 +384,12 @@ def register_routes(app: Flask) -> None:
             LOGGER.exception("Config import failed")
             return _json_error(f"Could not import backup: {exc}", 500)
 
+        _refresh_runtime_after_config_change()
         return _json_ok(
             {
                 "devices": config_store.get_devices(),
                 "routines": config_store.get_routines(),
-                "settings": config_store.get_settings(),
+                "settings": _settings_for_response(config_store.get_settings()),
             }
         )
 
@@ -355,7 +401,8 @@ def register_routes(app: Flask) -> None:
 
         LOGGER.warning("Factory reset requested")
         configs = system_tools.factory_reset()
-        gpio_controller.setup()
+        _refresh_runtime_after_config_change()
+        configs["settings"] = _settings_for_response(configs.get("settings", {}))
         return _json_ok(configs)
 
     @app.get("/api/system/info")
@@ -369,7 +416,7 @@ def register_routes(app: Flask) -> None:
                 "outputs": gpio_controller.get_output_states(),
                 "running": routine_engine.is_running(),
                 "ip_addresses": system_tools.get_ip_addresses(),
-                "settings": settings,
+                "settings": _settings_for_response(settings),
                 "deployment": system_tools.get_deployment_info(),
                 "access": _access_info(),
             }
@@ -411,12 +458,41 @@ def register_routes(app: Flask) -> None:
         except ValueError as exc:
             return _json_error(str(exc), 400)
 
-        try:
-            gpio_controller.setup()
-        except Exception as exc:
-            LOGGER.warning("GPIO setup refresh after setup save failed: %s", exc)
-
+        _refresh_runtime_after_config_change()
         return _json_ok(result)
+
+
+def _auth_gate():
+    path = request.path
+    endpoint = request.endpoint or ""
+
+    if endpoint == "static" or path.startswith("/static/"):
+        return None
+
+    if endpoint in {"login_page", "auth_status", "auth_login", "auth_logout"}:
+        return None
+
+    if _needs_first_run_setup():
+        if path == "/setup" or path == "/api/setup":
+            return None
+        if path.startswith("/api/") and request.method == "GET":
+            return None
+        if request.method == "GET" and not path.startswith("/api/"):
+            return redirect("/setup")
+
+    if not _operator_auth_enabled() or _operator_authenticated():
+        return None
+
+    if path.startswith("/api/"):
+        if request.method == "GET" and path in PUBLIC_API_GETS:
+            return None
+        return _json_error("Operator login required", 401)
+
+    if request.method == "GET":
+        next_url = request.full_path.rstrip("?") or request.path
+        return redirect(url_for("login_page", next=next_url))
+
+    return None
 
 
 def _run_output_action(output_id: str, action: str, duration: Optional[float] = None):
@@ -547,17 +623,59 @@ def _apply_setup(data: dict[str, Any]) -> dict[str, Any]:
 
     settings["controller_name"] = controller_name
     if "mock_mode" in data:
-        settings["mock_mode"] = bool(data["mock_mode"])
+        if not isinstance(data["mock_mode"], bool):
+            raise ValueError("mock_mode must be true or false")
+        settings["mock_mode"] = data["mock_mode"]
+    if "operator_pin" in data and str(data["operator_pin"]).strip():
+        settings["operator_pin_hash"] = auth.hash_pin(str(data["operator_pin"]).strip())
+    if "auth_enabled" in data:
+        if not isinstance(data["auth_enabled"], bool):
+            raise ValueError("auth_enabled must be true or false")
+        settings["auth_enabled"] = data["auth_enabled"]
     settings["setup_complete"] = True
 
     config_store.save_devices(devices)
     config_store.save_settings(settings)
 
-    return {"devices": devices, "routines": config_store.get_routines(), "settings": settings}
+    return {
+        "devices": devices,
+        "routines": config_store.get_routines(),
+        "settings": _settings_for_response(settings),
+    }
 
 
 def _needs_first_run_setup() -> bool:
     return not bool(config_store.get_settings().get("setup_complete", False))
+
+
+def _operator_auth_enabled() -> bool:
+    return auth.auth_enabled(config_store.get_settings())
+
+
+def _operator_authenticated() -> bool:
+    return bool(session.get("operator_authenticated"))
+
+
+def _settings_for_response(settings: dict[str, Any]) -> dict[str, Any]:
+    safe_settings = dict(settings)
+    safe_settings.pop("operator_pin_hash", None)
+    return safe_settings
+
+
+def _safe_next_url(value: Optional[str]) -> str:
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    return value
+
+
+def _refresh_runtime_after_config_change() -> None:
+    try:
+        gpio_controller.setup()
+    except Exception as exc:
+        LOGGER.warning("GPIO setup refresh after config change failed: %s", exc)
+
+    audio_controller.reset_runtime_config()
+    video_controller.reset_runtime_config()
 
 
 def _set_show_armed(armed: bool) -> dict[str, Any]:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 from pathlib import Path
 
 from flask import Flask, jsonify
@@ -27,6 +29,7 @@ def create_app() -> Flask:
         static_folder=str(base_dir / "static"),
         template_folder=str(base_dir / "templates"),
     )
+    app.secret_key = os.environ.get("HAUNTOS_SECRET_KEY") or secrets.token_hex(32)
     register_routes(app)
 
     try:

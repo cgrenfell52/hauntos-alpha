@@ -129,11 +129,20 @@ def scheduler_status() -> dict[str, Any]:
 
 
 def _normalize_scheduler_settings(data: dict[str, Any]) -> dict[str, Any]:
-    mode = str(data.get("mode", config_store.DEFAULT_SCHEDULER["mode"])).lower()
+    enabled = data.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be true or false")
+
+    mode_value = data.get("mode", config_store.DEFAULT_SCHEDULER["mode"])
+    if not isinstance(mode_value, str):
+        raise ValueError("Scheduler mode must be fixed or random")
+    mode = mode_value.lower()
     if mode not in ("fixed", "random"):
         raise ValueError("Scheduler mode must be fixed or random")
 
-    routine = str(data.get("routine", config_store.DEFAULT_SCHEDULER["routine"]))
+    routine = data.get("routine", config_store.DEFAULT_SCHEDULER["routine"])
+    if not isinstance(routine, str):
+        raise ValueError("routine must be a string")
     routines = config_store.get_routines()
     if routine != "random" and routine not in routines:
         raise ValueError(f"Unknown routine: {routine}")
@@ -149,7 +158,7 @@ def _normalize_scheduler_settings(data: dict[str, Any]) -> dict[str, Any]:
     end_time = _normalize_time(data.get("end_time", config_store.DEFAULT_SCHEDULER["end_time"]))
 
     return {
-        "enabled": bool(data.get("enabled", False)),
+        "enabled": enabled,
         "start_time": start_time,
         "end_time": end_time,
         "mode": mode,
@@ -187,7 +196,11 @@ def _run_scheduled_routine(settings: dict[str, Any]) -> None:
 
 def _choose_routine_id(settings: dict[str, Any], routines: dict[str, Any]) -> str | None:
     if settings.get("routine") == "random":
-        candidates = [routine_id for routine_id, tiles in routines.items() if isinstance(tiles, list)]
+        candidates = [
+            routine_id
+            for routine_id, tiles in routines.items()
+            if isinstance(tiles, list) and len(tiles) > 0
+        ]
         if not candidates:
             return None
         return random.choice(candidates)
@@ -243,6 +256,8 @@ def _time_to_minutes(value: str) -> int:
 
 
 def _positive_int(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a positive integer")
     try:
         number = int(value)
     except (TypeError, ValueError) as exc:

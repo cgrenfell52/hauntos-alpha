@@ -6,7 +6,7 @@ available. Outputs are always driven OFF during setup and cleanup.
 
 from __future__ import annotations
 
-import time
+import threading
 from typing import Any, Optional
 
 try:
@@ -23,6 +23,10 @@ ACTIVE_LOW_INPUTS = True
 
 DEVICES: dict[str, Any] = {}
 OUTPUT_STATES: dict[str, bool] = {}
+MAX_MANUAL_PULSE_SECONDS = 30.0
+_pulse_lock = threading.Lock()
+_pulse_stop_event = threading.Event()
+_active_pulses = 0
 
 
 def setup() -> None:
@@ -104,16 +108,33 @@ def turn_off(output_id: str) -> None:
 
 def pulse(output_id: str, duration: float) -> None:
     """Turn an output ON for duration seconds, then OFF."""
+    global _active_pulses
+
     if duration < 0:
         raise ValueError("Pulse duration must be greater than or equal to 0")
+    if duration > MAX_MANUAL_PULSE_SECONDS:
+        raise ValueError("Pulse duration must be 30 seconds or less")
 
-    turn_on(output_id)
-    time.sleep(duration)
-    turn_off(output_id)
+    with _pulse_lock:
+        if _active_pulses == 0:
+            _pulse_stop_event.clear()
+        _active_pulses += 1
+
+    started = False
+    try:
+        turn_on(output_id)
+        started = True
+        _pulse_stop_event.wait(duration)
+    finally:
+        if started:
+            turn_off(output_id)
+        with _pulse_lock:
+            _active_pulses = max(0, _active_pulses - 1)
 
 
 def all_off() -> None:
     """Turn every enabled output OFF."""
+    _pulse_stop_event.set()
     _load_devices_if_needed()
 
     for output_id, device in _outputs().items():

@@ -98,6 +98,13 @@ def stop_all_sounds() -> None:
     ACTIVE_CHANNELS.clear()
 
 
+def reset_runtime_config() -> None:
+    """Refresh cached runtime settings after setup or config import changes."""
+    global MOCK_MODE
+
+    MOCK_MODE = None
+
+
 def _use_mock_audio() -> bool:
     global MOCK_MODE
 

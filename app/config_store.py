@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from app import routine_schema
+    from app import auth, routine_schema
 except ImportError:  # Allows running this file directly from the app folder.
+    import auth  # type: ignore
     import routine_schema  # type: ignore
 
 
@@ -58,6 +59,8 @@ DEFAULT_SETTINGS = {
     "controller_name": "HauntOS Controller",
     "setup_complete": False,
     "show_armed": False,
+    "auth_enabled": True,
+    "operator_pin_hash": auth.default_pin_hash(),
     "scheduler": {
         "enabled": False,
         "start_time": "19:00",
@@ -190,7 +193,7 @@ def save_routines(data: dict[str, Any]) -> None:
 
 def save_settings(data: dict[str, Any]) -> None:
     """Save settings.json."""
-    save_config("settings", data)
+    save_config("settings", _merge_settings_defaults(data))
 
 
 def reset_config(name: str) -> dict[str, Any]:
@@ -244,7 +247,7 @@ def _is_valid_config(name: str, data: Any) -> bool:
         return True
 
     if name == "settings":
-        return _has_keys(data, ("mock_mode", "active_low_outputs", "active_low_inputs"))
+        return _valid_settings(data)
 
     return False
 
@@ -290,6 +293,63 @@ def _valid_input(input_config: Any) -> bool:
     return isinstance(allow_concurrent, bool)
 
 
+def _valid_settings(settings: dict[str, Any]) -> bool:
+    required_bools = ("mock_mode", "active_low_outputs", "active_low_inputs")
+    if not all(isinstance(settings.get(key), bool) for key in required_bools):
+        return False
+
+    optional_bools = ("setup_complete", "show_armed", "auth_enabled")
+    if any(key in settings and not isinstance(settings.get(key), bool) for key in optional_bools):
+        return False
+
+    if "controller_name" in settings and not isinstance(settings.get("controller_name"), str):
+        return False
+
+    if "operator_pin_hash" in settings and not isinstance(settings.get("operator_pin_hash"), str):
+        return False
+
+    scheduler_settings = settings.get("scheduler")
+    if scheduler_settings is not None and not _valid_scheduler_settings(scheduler_settings):
+        return False
+
+    return True
+
+
+def _valid_scheduler_settings(settings: Any) -> bool:
+    if not isinstance(settings, dict):
+        return False
+
+    if "enabled" in settings and not isinstance(settings.get("enabled"), bool):
+        return False
+
+    mode = settings.get("mode")
+    if mode is not None and mode not in {"fixed", "random"}:
+        return False
+
+    routine = settings.get("routine")
+    if routine is not None and not isinstance(routine, str):
+        return False
+
+    start_time = settings.get("start_time")
+    if start_time is not None and not _valid_time_string(start_time):
+        return False
+
+    end_time = settings.get("end_time")
+    if end_time is not None and not _valid_time_string(end_time):
+        return False
+
+    interval_min = settings.get("interval_min")
+    interval_max = settings.get("interval_max")
+    if interval_min is not None and not _is_positive_int(interval_min):
+        return False
+    if interval_max is not None and not _is_positive_int(interval_max):
+        return False
+    if interval_min is not None and interval_max is not None and int(interval_max) < int(interval_min):
+        return False
+
+    return True
+
+
 def _has_keys(data: dict[str, Any], keys: tuple[str, ...]) -> bool:
     return all(key in data for key in keys)
 
@@ -302,6 +362,9 @@ def _merge_settings_defaults(settings: dict[str, Any]) -> dict[str, Any]:
     if isinstance(scheduler_settings, dict):
         merged["scheduler"] = copy.deepcopy(DEFAULT_SCHEDULER)
         merged["scheduler"].update(scheduler_settings)
+
+    if not _valid_settings(merged):
+        raise ValueError("Invalid settings config structure")
 
     return merged
 
@@ -337,6 +400,27 @@ def _is_int(value: Any) -> bool:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_positive_int(value: Any) -> bool:
+    return _is_int(value) and value > 0
+
+
+def _valid_time_string(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+
+    parts = value.split(":")
+    if len(parts) != 2:
+        return False
+
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return False
+
+    return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
 def _output_ids() -> tuple[str, ...]:

@@ -1,51 +1,45 @@
-# HauntOS V1
+# HauntOS v0.1.0-alpha
 
-HauntOS is a Raspberry Pi-based Halloween show controller for outputs, inputs,
-tile-based routines, audio playback, video playback, file uploads, and a mobile
-web interface.
+HauntOS is a Raspberry Pi Halloween/show controller with a mobile operator dashboard, tile-based routines, physical inputs, output control, scheduler support, audio/video playback, and a local Flask web UI.
+
+This alpha is aimed at field testing: fast setup, clear show state, guarded destructive actions, strict config validation, and a visible STOP EVERYTHING path.
+
+## Current Alpha Highlights
+
+- Quick Setup Wizard for controller, output, and input naming.
+- Mobile operator dashboard for show state, controller status, scheduler readiness, active routines, trigger pads, and output state.
+- Routine concurrency controls with exclusive-by-default inputs.
+- Audio concurrency controls with exclusive-by-default sound tiles.
+- Single-player video behavior for predictable show playback.
+- Operator PIN protection for mutating control APIs after setup is complete.
+- Purple/red logo and status badge for connected/offline state testing.
+- Config import/export, factory reset, scheduler, media library, and system panels.
 
 ## Project Layout
 
 ```text
-hauntos/
+hauntos-alpha/
   app/
-    main.py
-    routes.py
-    routine_engine.py
-    input_monitor.py
-    gpio_controller.py
-    audio_controller.py
-    video_controller.py
-    config_store.py
-  config/
-    devices.json
-    routines.json
-    settings.json
   audio/
-  video/
+  config/
   deploy/
-    hauntos.service
-    hauntos-portal.service
-    install_service.sh
-    uninstall_service.sh
-    hotspot_setup.md
-    install_hotspot.sh
-    install_captive_portal.sh
-    captive_portal.py
   static/
-    css/
-    js/
   templates/
-  requirements.txt
+  tests/
+  video/
+  context.md
   README.md
+  requirements.txt
 ```
+
+Runtime config JSON and uploaded media are intentionally ignored by Git. The app recreates defaults and users can export/import backups from the UI.
 
 ## Development Setup
 
 ```powershell
-cd hauntos
+cd C:\Users\cgren\OneDrive\Documents\hauntos-alpha
 python -m venv venv
-.\\venv\\Scripts\\Activate.ps1
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m app.main
 ```
@@ -56,13 +50,44 @@ Open the web interface at:
 http://127.0.0.1:5000/
 ```
 
-Local development does not require systemd. The service files under `deploy/`
-are only for Raspberry Pi deployment.
+Local development does not require systemd. Service files under `deploy/` are only for Raspberry Pi deployment.
+
+## Operator Login
+
+After first-run setup is complete, mutating control APIs require an operator session. The default alpha operator PIN is:
+
+```text
+1031
+```
+
+Set a deployment PIN without editing files:
+
+```bash
+export HAUNTOS_OPERATOR_PIN="change-me"
+export HAUNTOS_SECRET_KEY="use-a-long-random-secret"
+```
+
+For local-only bench testing, auth can be disabled with:
+
+```bash
+export HAUNTOS_AUTH_DISABLED=true
+```
+
+Do not disable auth on a show network.
+
+## Verification
+
+```powershell
+node --check static/js/main.js
+python -m compileall app
+python -m unittest discover -s tests
+```
+
+GitHub Actions runs the same core checks on pushes and pull requests.
 
 ## Raspberry Pi Service Deployment
 
-The systemd unit expects the project to live at `/home/pi/hauntos` and the
-virtual environment Python executable to exist at `/home/pi/hauntos/venv/bin/python`.
+The systemd unit expects the project to live at `/home/pi/hauntos` and the virtual environment Python executable to exist at `/home/pi/hauntos/venv/bin/python`.
 
 On the Pi:
 
@@ -74,9 +99,6 @@ chmod +x deploy/install_service.sh deploy/uninstall_service.sh
 ./deploy/install_service.sh
 ```
 
-The installer copies `deploy/hauntos.service` to `/etc/systemd/system/`, reloads
-systemd, enables HauntOS at boot, and starts it immediately.
-
 Useful service commands:
 
 ```bash
@@ -86,20 +108,9 @@ sudo systemctl stop hauntos.service
 journalctl -u hauntos.service -f
 ```
 
-To remove the service:
-
-```bash
-cd /home/pi/hauntos
-./deploy/uninstall_service.sh
-```
-
-The service uses `SIGINT` and `TimeoutStopSec=5` so HauntOS has a short clean
-shutdown window before systemd forces termination.
-
 ## Raspberry Pi Hotspot Mode
 
-Hotspot mode is optional. It lets the Pi create its own WiFi network named
-`HauntOS` so a phone or tablet can connect directly at a show site.
+Hotspot mode is optional. It lets the Pi create its own WiFi network named `HauntOS` so a phone or tablet can connect directly at a show site.
 
 Defaults:
 
@@ -116,23 +127,6 @@ chmod +x deploy/install_hotspot.sh
 ./deploy/install_hotspot.sh
 ```
 
-The script warns before changing network settings. Type `YES` to continue.
-After it finishes, connect your phone to WiFi network `HauntOS` and open
-`http://192.168.4.1:5000`.
-
-Optional captive portal auto-open helper:
-
-```bash
-cd /home/pi/hauntos
-chmod +x deploy/install_captive_portal.sh
-./deploy/install_captive_portal.sh
-```
-
-This installs a small port 80 redirector and a NetworkManager DNS catch-all so
-phones/tablets are more likely to offer the HauntOS UI automatically after
-joining the hotspot. Mobile operating systems vary, so the manual URL remains
-`http://192.168.4.1:5000`.
-
 Disable hotspot mode:
 
 ```bash
@@ -142,8 +136,3 @@ cd /home/pi/hauntos
 ```
 
 Full hotspot notes and rollback commands are in `deploy/hotspot_setup.md`.
-
-## Build Rule
-
-Build forward one phase at a time. Do not implement later-phase behavior until
-the current phase is accepted.

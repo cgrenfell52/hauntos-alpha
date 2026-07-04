@@ -1644,6 +1644,10 @@ async function handleResponse(response) {
   if (!response.ok || data.ok === false) {
     const error = new Error(data.error || `Request failed: ${response.status}`);
     error.status = response.status;
+    if (response.status === 401) {
+      const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+      window.location.href = `/login?next=${next}`;
+    }
     throw error;
   }
   return data;
