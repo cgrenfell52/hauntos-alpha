@@ -136,7 +136,15 @@ def _trigger_input(input_id: str, now: float, simulated: bool = False) -> bool:
 
     source = "simulated input" if simulated else "input"
     print(f"Input monitor: {source} {input_id} triggered routine")
-    routine_engine.run_routine(tile_list, routine_id=input_id)
+    try:
+        routine_engine.run_routine(
+            tile_list,
+            routine_id=input_id,
+            allow_concurrent=bool(input_config.get("allow_concurrent", False)),
+        )
+    except routine_engine.RoutineConcurrencyError as exc:
+        print(f"Input monitor: {input_id} blocked: {exc}")
+        return False
     return True
 
 

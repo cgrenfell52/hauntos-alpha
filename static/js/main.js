@@ -12,8 +12,13 @@ let systemInfo = null;
 let recentLogs = [];
 let schedulerData = null;
 let dirtyRoutineInputs = new Set();
+const pendingDashboardInputs = new Set();
 let lastRuntimeKey = "";
 let statusPollTimer = null;
+let controllerOnline = true;
+let logoPreviewOffline = false;
+const setupWizardSteps = ["controller", "outputs", "inputs", "review"];
+let setupWizardStep = "controller";
 
 document.addEventListener("DOMContentLoaded", () => {
   bindShellActions();
@@ -46,6 +51,7 @@ async function loadPage() {
 
     const needsAudio = page === "inputs" || page === "audio";
     const needsVideo = page === "inputs" || page === "video";
+    const needsDashboardScheduler = page === "dashboard";
 
     if (needsAudio) {
       requests.push(apiGet("/api/audio"));
@@ -53,8 +59,12 @@ async function loadPage() {
     if (needsVideo) {
       requests.push(apiGet("/api/video"));
     }
+    if (needsDashboardScheduler) {
+      requests.push(apiGet("/api/scheduler"));
+    }
 
     const responses = await Promise.all(requests);
+    setControllerConnection(true);
     devices = responses[0].devices;
     statusData = responses[1];
     routines = responses[2].routines;
@@ -67,6 +77,10 @@ async function loadPage() {
     }
     if (needsVideo) {
       videoFiles = responses[responseIndex].video || [];
+      responseIndex += 1;
+    }
+    if (needsDashboardScheduler) {
+      schedulerData = responses[responseIndex];
     }
 
     renderShellStatus();
@@ -89,11 +103,13 @@ async function loadPage() {
       await renderSchedulerPage();
     }
   } catch (error) {
+    setControllerConnection(false);
     showMessage(error.message, true);
   }
 }
 
 function renderShellStatus() {
+  setControllerConnection(true);
   const settings = statusData.settings || {};
   const showArmed = Boolean(settings.show_armed);
   const schedulerEnabled = Boolean(settings.scheduler?.enabled);
@@ -101,7 +117,7 @@ function renderShellStatus() {
   const detailText = statusData.running
     ? showArmed ? "Routine active / show armed" : "Routine finishing / show stopped"
     : showArmed ? "Show is armed" : "Show is stopped";
-  const version = settings.version || "1.0.0";
+  const version = statusData.version || settings.version || "v0.1.0-alpha";
 
   document.body.classList.toggle("is-running", Boolean(statusData.running));
   document.body.classList.toggle("show-armed", showArmed);
@@ -112,30 +128,65 @@ function renderShellStatus() {
   setText("#running-indicator", statusData.running ? "Routine Running" : "Idle");
   setText("#scheduler-indicator", schedulerEnabled ? "Schedule On" : "Schedule Off");
   setText("#dashboard-status-word", readyText);
-  setText("#dashboard-status-detail", `Controller Online / Version ${version}`);
+  setText("#dashboard-status-detail", detailText);
+  setText("#dashboard-controller-status", controllerOnline ? "Online" : "Offline");
+  setText("#dashboard-controller-detail", `Version ${version}`);
+  setText("#dashboard-mode-status", settings.mock_mode ? "Mock mode" : "Hardware GPIO");
+  setText("#dashboard-mode-detail", settings.mock_mode ? "Simulated I/O" : "GPIO active");
+  const activeRunCount = Array.isArray(statusData.active_runs) ? statusData.active_runs.length : 0;
+  setText("#dashboard-active-count", `${activeRunCount} active`);
+  setText("#dashboard-active-detail", activeRunCount ? "Routine activity live" : "No active routines");
   setText("#sidebar-version", version);
   renderShowButtons(showArmed);
 }
 
 function renderDashboard() {
+  const settings = statusData?.settings || {};
+  const activeRuns = Array.isArray(statusData?.active_runs) ? statusData.active_runs : [];
+  const schedulerText = dashboardSchedulerText();
+  const outputStates = statusData?.outputs || {};
+  const outputOnCount = Object.values(outputStates).filter(Boolean).length;
+
   setText("#system-status", statusData.running ? "Routine running" : "Ready");
   setText("#dashboard-input-summary", `${Object.keys(devices.inputs).length} manual triggers`);
   setText("#dashboard-output-summary", outputSummaryText());
+  setText("#dashboard-controller-status", controllerOnline ? "Online" : "Offline");
+  setText("#dashboard-mode-status", settings.mock_mode ? "Mock mode" : "Hardware GPIO");
+  setText("#dashboard-mode-detail", settings.mock_mode ? "Simulated I/O" : "GPIO active");
+  setText("#dashboard-scheduler-status", schedulerText.status);
+  setText("#dashboard-scheduler-detail", schedulerText.detail);
+  setText("#dashboard-active-count", `${activeRuns.length} active`);
+  setText("#dashboard-active-detail", activeRuns.length ? "Routine activity live" : "No active routines");
+  setText("#dashboard-active-summary", activeRuns.length ? `${activeRuns.length} running now` : "No active routines");
+  renderDashboardActiveRuns(activeRuns);
 
   const inputs = document.querySelector("#dashboard-inputs");
   if (inputs) {
     inputs.innerHTML = "";
     Object.entries(devices.inputs).forEach(([inputId, input]) => {
       const button = document.createElement("button");
-      button.className = "trigger-button";
+      const isPending = pendingDashboardInputs.has(inputId);
+      button.className = `trigger-button dashboard-trigger-button ${isPending ? "dashboard-trigger-disabled" : ""}`;
       button.type = "button";
+      button.disabled = isPending;
       button.innerHTML = `
         <strong>${escapeHtml(input.name)}</strong>
-        <span>${routineStepText(inputId)} ready</span>
+        <span class="dashboard-trigger-meta">${escapeHtml(routineStepText(inputId))}</span>
+        <span class="dashboard-trigger-badges">
+          <span class="mini-badge ${input.enabled ? "good" : "muted"}">${input.enabled ? "Enabled" : "Disabled"}</span>
+          <span class="mini-badge">${escapeHtml(cooldownText(input))}</span>
+          <span class="mini-badge ${input.allow_concurrent ? "purple" : ""}">${input.allow_concurrent ? "Concurrent" : "Exclusive"}</span>
+        </span>
       `;
       button.addEventListener("click", () => runInput(inputId));
       inputs.appendChild(button);
     });
+  }
+
+  const outputEmpty = document.querySelector("#dashboard-output-empty");
+  if (outputEmpty) {
+    outputEmpty.hidden = outputOnCount > 0;
+    outputEmpty.textContent = "All outputs off";
   }
 
   const outputs = document.querySelector("#dashboard-outputs");
@@ -145,6 +196,78 @@ function renderDashboard() {
       outputs.appendChild(outputStateCard(outputId, output));
     });
   }
+}
+
+function renderDashboardActiveRuns(activeRuns) {
+  const list = document.querySelector("#dashboard-active-runs");
+  if (!list) {
+    return;
+  }
+
+  list.innerHTML = "";
+  if (!activeRuns.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted dashboard-empty-state";
+    empty.textContent = "No active routines.";
+    list.appendChild(empty);
+    return;
+  }
+
+  activeRuns.forEach((run) => {
+    const card = document.createElement("article");
+    card.className = "active-run-card";
+    const stepText = run.tile_index === null || run.tile_index === undefined
+      ? "Starting"
+      : `Step ${Number(run.tile_index) + 1}`;
+    const routineName = run.routine_id ? inputOptionLabel(run.routine_id) : "Custom routine";
+    card.innerHTML = `
+      <div>
+        <strong>${escapeHtml(routineName)}</strong>
+        <span>${escapeHtml(dashboardTileSummary(run))}</span>
+      </div>
+      <div class="active-run-meta">
+        <span class="mini-badge">${escapeHtml(stepText)}</span>
+        <span class="mini-badge ${run.allow_concurrent ? "purple" : ""}">${run.allow_concurrent ? "Concurrent" : "Exclusive"}</span>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function dashboardSchedulerText() {
+  if (!schedulerData || !schedulerData.settings) {
+    return { status: "Schedule Unknown", detail: "Waiting for scheduler" };
+  }
+
+  const settings = schedulerData.settings;
+  if (!settings.enabled) {
+    return { status: "Schedule Off", detail: "No automatic runs" };
+  }
+  if (!schedulerData.armed) {
+    return { status: "Waiting for Show Armed", detail: "Start Show to allow scheduled runs" };
+  }
+  if (!schedulerData.active_hours) {
+    return { status: "Outside Active Hours", detail: `${settings.start_time} to ${settings.end_time}` };
+  }
+  if (schedulerData.next_run_in !== null && schedulerData.next_run_in !== undefined) {
+    return { status: `Next Run in ${schedulerData.next_run_in}s`, detail: dashboardSchedulerRoutineText(settings.routine) };
+  }
+  return { status: "Ready", detail: dashboardSchedulerRoutineText(settings.routine) };
+}
+
+function dashboardSchedulerRoutineText(routineId) {
+  if (routineId === "random") {
+    return "Random routine";
+  }
+  return inputOptionLabel(routineId || "IN1");
+}
+
+function dashboardTileSummary(run) {
+  const tile = run?.tile;
+  if (!tile) {
+    return "Starting routine";
+  }
+  return `${tileTitle(tile)} / ${tileSummary(tile)}`;
 }
 
 function renderShowButtons(showArmed) {
@@ -243,8 +366,8 @@ async function renderSystemPage() {
     list.innerHTML = "";
     [
       ["Controller", info.controller_name || "HauntOS Controller"],
-      ["Version", info.version || "1.0.0"],
-      ["Mock Mode", info.mock_mode ? "Enabled" : "Disabled"],
+      ["Version", info.version || "v0.1.0-alpha"],
+      ["Controller Mode", info.mock_mode ? "Mock mode" : "Hardware GPIO mode"],
       ["Show Armed", info.settings?.show_armed ? "Yes" : "No"],
       ["Setup Complete", info.settings?.setup_complete ? "Yes" : "No"],
       ["Running Routine", info.running ? "Yes" : "No"],
@@ -268,15 +391,16 @@ function renderConnectionInfo(info) {
   const lanUrls = Array.isArray(access.lan_urls) ? access.lan_urls : [];
   const connectionList = document.querySelector("#connection-list");
 
-  setText("#connection-summary", deployment.is_raspberry_pi ? "Pi deployment" : "Local / mock");
+  setText("#connection-summary", controllerOnline ? "API connected" : "API offline");
   if (!connectionList) {
     return;
   }
 
   connectionList.innerHTML = "";
   [
+    ["Controller Connection", controllerOnline ? "Connected to HauntOS API" : "Offline"],
     ["Running On", deployment.is_raspberry_pi ? deployment.pi_model : `${deployment.platform || "Local"} machine`],
-    ["GPIO Mode", info.mock_mode ? "Mock mode - no hardware active" : "Hardware mode"],
+    ["Control Mode", info.mock_mode ? "Mock mode - simulated GPIO/media" : "Hardware mode - GPIO active"],
     ["Current Browser URL", access.current_url || "Unavailable"],
     ["LAN Access URL", lanUrls.join(", ") || "Unavailable until network is connected"],
     ["Hotspot URL", access.hotspot_url || "http://192.168.4.1"],
@@ -294,10 +418,105 @@ function renderSetupPage() {
   if (controllerInput) {
     controllerInput.value = settings.controller_name || "HauntOS Controller";
   }
+  setChecked("#setup-mock-mode", Boolean(settings.mock_mode));
 
   renderNameFields("#setup-outputs", devices.outputs);
   renderNameFields("#setup-inputs", devices.inputs);
-  renderSetupSelect("#setup-test-output-select", Object.keys(devices.outputs), devices.outputs);
+  renderSetupWizard();
+}
+
+function renderSetupWizard() {
+  const currentIndex = setupWizardSteps.indexOf(setupWizardStep);
+  const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+  setupWizardStep = setupWizardSteps[safeIndex];
+
+  document.querySelectorAll("[data-setup-step]").forEach((step) => {
+    const active = step.dataset.setupStep === setupWizardStep;
+    step.classList.toggle("active", active);
+    step.setAttribute("aria-hidden", active ? "false" : "true");
+  });
+
+  updateSetupWizardNav(safeIndex);
+
+  if (setupWizardStep === "review") {
+    renderSetupReview();
+  }
+}
+
+function updateSetupWizardNav(safeIndex = setupWizardSteps.indexOf(setupWizardStep)) {
+  document.querySelectorAll("[data-setup-progress]").forEach((button) => {
+    const stepName = button.dataset.setupProgress;
+    const index = setupWizardSteps.indexOf(stepName);
+    const active = stepName === setupWizardStep;
+    button.classList.toggle("active", active);
+    button.classList.toggle("complete", index >= 0 && index < safeIndex);
+    if (active) {
+      button.setAttribute("aria-current", "step");
+    } else {
+      button.removeAttribute("aria-current");
+    }
+    button.disabled = !canUseSetupStep(index);
+  });
+
+  const backButton = document.querySelector("[data-action='setup-back']");
+  const nextButton = document.querySelector("[data-action='setup-next']");
+  const saveButton = document.querySelector("[data-action='setup-save']");
+  const isReview = setupWizardStep === "review";
+
+  if (backButton) {
+    backButton.disabled = safeIndex === 0;
+  }
+  if (nextButton) {
+    nextButton.hidden = isReview;
+    nextButton.disabled = setupWizardStep === "controller" && !setupControllerName();
+  }
+  if (saveButton) {
+    saveButton.hidden = !isReview;
+  }
+}
+
+function canUseSetupStep(index) {
+  if (index < 0) {
+    return false;
+  }
+  if (index === 0) {
+    return true;
+  }
+  return Boolean(setupControllerName());
+}
+
+function setupControllerName() {
+  return (document.querySelector("#setup-controller-name")?.value || "").trim();
+}
+
+function goToSetupStep(stepName) {
+  const nextIndex = setupWizardSteps.indexOf(stepName);
+  if (!canUseSetupStep(nextIndex)) {
+    showMessage("Controller name is required before continuing.", true);
+    return;
+  }
+
+  setupWizardStep = setupWizardSteps[nextIndex];
+  renderSetupWizard();
+}
+
+function renderSetupReview() {
+  const list = document.querySelector("#setup-review-list");
+  if (!list) {
+    return;
+  }
+
+  const payload = setupPayload();
+  const outputCount = Object.keys(payload.outputs).length;
+  const inputCount = Object.keys(payload.inputs).length;
+
+  list.innerHTML = "";
+  [
+    ["Controller", payload.controller_name],
+    ["Mode", payload.mock_mode ? "Mock mode" : "Hardware GPIO mode"],
+    ["Outputs Named", `${outputCount} outputs`],
+    ["Inputs Named", `${inputCount} inputs`],
+  ].forEach(([label, value]) => list.appendChild(descriptionRow(label, value)));
 }
 
 async function renderSchedulerPage() {
@@ -487,8 +706,12 @@ function renderInputSettings() {
   }
 
   const input = devices.inputs[selectedInputId];
-  setText("#input-settings-summary", `${input.enabled ? "Enabled" : "Disabled"} / ${cooldownText(input)}`);
+  setText(
+    "#input-settings-summary",
+    `${input.enabled ? "Enabled" : "Disabled"} / ${cooldownText(input)} / ${input.allow_concurrent ? "Concurrent" : "Exclusive"}`
+  );
   setChecked("#input-enabled", Boolean(input.enabled));
+  setChecked("#input-allow-concurrent", Boolean(input.allow_concurrent));
   setValue("#input-cooldown", Number(input.cooldown ?? 0));
 }
 
@@ -561,8 +784,8 @@ function tileCard(tile, index) {
   const actions = actionGroup(
     [
       actionButton(expandedTileIndex === index ? "Close" : "Edit", () => toggleTileEditor(index), "tile-action-button tile-edit-button"),
-      actionButton("↑", () => moveTile(index, -1), "tile-action-button tile-arrow-button", "Move tile up"),
-      actionButton("↓", () => moveTile(index, 1), "tile-action-button tile-arrow-button", "Move tile down"),
+      actionButton("Up", () => moveTile(index, -1), "tile-action-button tile-arrow-button", "Move tile up"),
+      actionButton("Dn", () => moveTile(index, 1), "tile-action-button tile-arrow-button", "Move tile down"),
       actionButton("Del", () => deleteTile(index), "tile-action-button tile-delete-button", "Delete tile"),
     ],
     "actions tile-actions"
@@ -591,7 +814,8 @@ function tileFields(tile, index) {
     }
     wrapper.append(
       selectField("File", tile.file || audioFiles[0] || "", audioFiles, (value) => updateTile(index, "file", value), (value) => value || "Upload audio first"),
-      selectField("Mode", tile.mode || "play_and_continue", ["play_and_continue", "wait_until_done"], (value) => updateTile(index, "mode", value))
+      selectField("Mode", tile.mode || "play_and_continue", ["play_and_continue", "wait_until_done"], (value) => updateTile(index, "mode", value)),
+      checkboxField("Allow Audio Overlap", Boolean(tile.allow_concurrent), (checked) => updateTile(index, "allow_concurrent", checked))
     );
   } else if (tile.type === "video") {
     if (!videoFiles.length) {
@@ -670,7 +894,7 @@ function fieldShell(label) {
 
 function outputStateCard(outputId, output) {
   const card = document.createElement("article");
-  card.className = "state-card";
+  card.className = `state-card ${isOutputOn(outputId) ? "dashboard-output-on" : ""}`;
   card.append(deviceIcon("OUT"), deviceInfo(output.name, isOutputOn(outputId) ? "Currently on" : "Currently off"), outputStatePill(outputId));
   return card;
 }
@@ -803,18 +1027,64 @@ function bindSetupForm() {
     return;
   }
 
-  const testButton = document.querySelector("#setup-test-output");
-  if (testButton) {
-    testButton.addEventListener("click", async () => {
-      const outputId = document.querySelector("#setup-test-output-select")?.value || "OUT1";
-      await outputAction(outputId, "pulse");
-      const outputName = devices?.outputs?.[outputId]?.name || outputId;
-      showToast(`${outputName} test pulse sent`);
+  const logoPreviewToggle = document.querySelector("#setup-logo-preview");
+  if (logoPreviewToggle) {
+    logoPreviewToggle.addEventListener("change", () => {
+      logoPreviewOffline = Boolean(logoPreviewToggle.checked);
+      renderConnectionLogo();
+    });
+  }
+
+  const controllerInput = document.querySelector("#setup-controller-name");
+  if (controllerInput) {
+    ["input", "change", "keyup"].forEach((eventName) => {
+      controllerInput.addEventListener(eventName, () => {
+        renderSetupWizard();
+        showMessage("");
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-setup-progress]").forEach((button) => {
+    button.addEventListener("click", () => goToSetupStep(button.dataset.setupProgress));
+  });
+
+  const backButton = document.querySelector("[data-action='setup-back']");
+  if (backButton) {
+    backButton.addEventListener("click", () => {
+      const index = setupWizardSteps.indexOf(setupWizardStep);
+      goToSetupStep(setupWizardSteps[Math.max(0, index - 1)]);
+    });
+  }
+
+  const nextButton = document.querySelector("[data-action='setup-next']");
+  if (nextButton) {
+    nextButton.addEventListener("click", () => {
+      if (!setupControllerName()) {
+        renderSetupWizard();
+        showMessage("Controller name is required before continuing.", true);
+        return;
+      }
+      const index = setupWizardSteps.indexOf(setupWizardStep);
+      goToSetupStep(setupWizardSteps[Math.min(setupWizardSteps.length - 1, index + 1)]);
     });
   }
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!setupControllerName()) {
+      setupWizardStep = "controller";
+      renderSetupWizard();
+      showMessage("Controller name is required before saving setup.", true);
+      return;
+    }
+    if (setupWizardStep !== "review") {
+      const index = setupWizardSteps.indexOf(setupWizardStep);
+      goToSetupStep(setupWizardSteps[Math.min(setupWizardSteps.length - 1, index + 1)]);
+      return;
+    }
+
+    renderSetupWizard();
     try {
       const payload = setupPayload();
       const data = await apiPost("/api/setup", payload);
@@ -825,6 +1095,7 @@ function bindSetupForm() {
       renderSetupPage();
       showToast("Setup saved");
       showMessage("Setup saved");
+      window.location.href = "/";
     } catch (error) {
       showToast(error.message, true);
       showMessage(error.message, true);
@@ -941,7 +1212,7 @@ function defaultTile(type) {
     return { type: "wait", duration: 1 };
   }
   if (type === "sound") {
-    return { type: "sound", file: audioFiles[0] || "", mode: "play_and_continue" };
+    return { type: "sound", file: audioFiles[0] || "", mode: "play_and_continue", allow_concurrent: false };
   }
   if (type === "video") {
     return { type: "video", file: videoFiles[0] || "", mode: "play_and_continue" };
@@ -999,12 +1270,16 @@ function duplicateRoutine() {
 
 async function saveRoutines() {
   const inputName = inputOptionLabel(selectedInputId);
-  const data = await apiPost("/api/routines", routines);
-  routines = data.routines;
-  dirtyRoutineInputs.clear();
-  renderInputsPage();
-  showToast(`${inputName} routine saved`);
-  showMessage(`${inputName} routine saved`);
+  try {
+    const data = await apiPost("/api/routines", routines);
+    routines = data.routines;
+    dirtyRoutineInputs.clear();
+    renderInputsPage();
+    showToast(`${inputName} routine saved`);
+    showMessage(`${inputName} routine saved`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function saveInputSettings() {
@@ -1016,13 +1291,18 @@ async function saveInputSettings() {
   const input = devices.inputs[selectedInputId];
   const cooldownValue = Number(document.querySelector("#input-cooldown")?.value ?? input.cooldown ?? 0);
   input.enabled = Boolean(document.querySelector("#input-enabled")?.checked);
+  input.allow_concurrent = Boolean(document.querySelector("#input-allow-concurrent")?.checked);
   input.cooldown = Number.isFinite(cooldownValue) && cooldownValue >= 0 ? Math.round(cooldownValue) : 0;
 
-  const data = await apiPost("/api/devices", devices);
-  devices = data.devices;
-  renderInputsPage();
-  showToast(`${inputOptionLabel(selectedInputId)} settings saved`);
-  showMessage(`${inputOptionLabel(selectedInputId)} settings saved`);
+  try {
+    const data = await apiPost("/api/devices", devices);
+    devices = data.devices;
+    renderInputsPage();
+    showToast(`${inputOptionLabel(selectedInputId)} settings saved`);
+    showMessage(`${inputOptionLabel(selectedInputId)} settings saved`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function testSelectedRoutine() {
@@ -1031,16 +1311,25 @@ async function testSelectedRoutine() {
     return;
   }
   const inputName = inputOptionLabel(selectedInputId);
-  await apiPost("/api/run/custom", { routine_id: selectedInputId, tiles: getRoutineTiles(selectedInputId) });
-  showToast(`${inputName} test routine started`);
-  showMessage(`${inputName} test routine started`);
-  await refreshStatus();
-  renderRoutineEditor();
+  try {
+    await apiPost("/api/run/custom", {
+      routine_id: selectedInputId,
+      tiles: getRoutineTiles(selectedInputId),
+      allow_concurrent: Boolean(devices?.inputs?.[selectedInputId]?.allow_concurrent),
+    });
+    showToast(`${inputName} test routine started`);
+    showMessage(`${inputName} test routine started`);
+    await refreshStatus();
+    renderRoutineEditor();
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function stopEverything() {
   await apiPost("/api/stop");
   await refreshStatus();
+  await refreshDashboardScheduler();
   renderCurrentPage();
   showToast("STOP sent. Show disarmed, outputs and media stopped.");
   showMessage("Stopped and disarmed");
@@ -1051,6 +1340,7 @@ async function toggleShowMode() {
   if (showArmed) {
     await apiPost("/api/show/stop");
     await refreshStatus();
+    await refreshDashboardScheduler();
     renderCurrentPage();
     showToast("Show stopped gracefully. Active routines can finish.");
     showMessage("Show stopped gracefully");
@@ -1059,6 +1349,7 @@ async function toggleShowMode() {
 
   await apiPost("/api/show/start");
   await refreshStatus();
+  await refreshDashboardScheduler();
   renderCurrentPage();
   showToast("Show armed. Inputs and scheduler can trigger routines.");
   showMessage("Show armed");
@@ -1099,12 +1390,31 @@ async function runGuardedSystemAction(action) {
 }
 
 async function runInput(inputId) {
+  if (pendingDashboardInputs.has(inputId)) {
+    return;
+  }
+
   const inputName = inputOptionLabel(inputId);
-  await apiPost(`/api/run/input/${inputId}`);
-  await refreshStatus();
-  renderCurrentPage();
-  showToast(`${inputName} routine started`);
-  showMessage(`${inputName} started`);
+  if (page === "dashboard") {
+    pendingDashboardInputs.add(inputId);
+    renderDashboard();
+  }
+
+  try {
+    await apiPost(`/api/run/input/${inputId}`);
+    await refreshStatus();
+    await refreshDashboardScheduler();
+    renderCurrentPage();
+    showToast(`${inputName} routine started`);
+    showMessage(`${inputName} started`);
+  } catch (error) {
+    showActionError(error);
+  } finally {
+    if (page === "dashboard") {
+      pendingDashboardInputs.delete(inputId);
+      renderDashboard();
+    }
+  }
 }
 
 async function outputAction(outputId, action) {
@@ -1140,31 +1450,50 @@ async function uploadMedia(kind, form) {
 }
 
 async function deleteMedia(kind, filename) {
-  const data = await apiDelete(`/api/${kind}/${encodeURIComponent(filename)}`);
-  if (kind === "audio") {
-    audioFiles = data.audio || [];
-    renderAudioPage();
-  } else {
-    videoFiles = data.video || [];
-    renderVideoPage();
+  if (!window.confirm(`Delete "${filename}"? This cannot be undone.`)) {
+    return;
   }
-  showToast(`${filename} deleted`);
-  showMessage(`${filename} deleted`);
+
+  try {
+    const data = await apiDelete(`/api/${kind}/${encodeURIComponent(filename)}`);
+    if (kind === "audio") {
+      audioFiles = data.audio || [];
+      renderAudioPage();
+    } else {
+      videoFiles = data.video || [];
+      renderVideoPage();
+    }
+    showToast(`${filename} deleted`);
+    showMessage(`${filename} deleted`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function testMedia(kind, filename) {
   const tile = kind === "audio"
-    ? { type: "sound", file: filename, mode: "play_and_continue" }
+    ? { type: "sound", file: filename, mode: "play_and_continue", allow_concurrent: false }
     : { type: "video", file: filename, mode: "play_and_continue" };
-  await apiPost("/api/run/custom", { tiles: [tile] });
-  await refreshStatus();
-  showToast(`Testing ${filename}`);
-  showMessage(`Testing ${filename}`);
+  try {
+    await apiPost("/api/run/custom", { tiles: [tile] });
+    await refreshStatus();
+    showToast(`Testing ${filename}`);
+    showMessage(`Testing ${filename}`);
+  } catch (error) {
+    showActionError(error);
+  }
 }
 
 async function refreshStatus() {
   statusData = await apiGet("/api/status");
+  setControllerConnection(true);
   renderShellStatus();
+}
+
+async function refreshDashboardScheduler() {
+  if (page === "dashboard") {
+    schedulerData = await apiGet("/api/scheduler");
+  }
 }
 
 function startStatusPolling() {
@@ -1182,11 +1511,18 @@ async function refreshRuntimeStatus() {
   const before = runtimeKey();
   try {
     await refreshStatus();
-  } catch (_error) {
+    await refreshDashboardScheduler();
+  } catch (error) {
+    setControllerConnection(false);
+    showMessage("Controller disconnected. Waiting for HauntOS to respond.", true);
     return;
   }
 
   const after = runtimeKey();
+  if (page === "dashboard") {
+    renderDashboard();
+    return;
+  }
   if (after !== before || after !== lastRuntimeKey) {
     lastRuntimeKey = after;
     if (page === "inputs") {
@@ -1194,6 +1530,47 @@ async function refreshRuntimeStatus() {
     } else if (page === "dashboard") {
       renderDashboard();
     }
+  }
+}
+
+function setControllerConnection(isOnline) {
+  controllerOnline = Boolean(isOnline);
+  renderConnectionLogo();
+
+  if (!controllerOnline) {
+    setText("#controller-online", "Offline");
+    setText("#shell-status", "OFFLINE");
+    setText("#shell-running", "Controller disconnected");
+    setText("#top-status", "Controller disconnected");
+    setText("#running-indicator", "Offline");
+    setText("#scheduler-indicator", "Schedule Unknown");
+    setText("#system-status", "Controller disconnected");
+    setText("#dashboard-controller-status", "Offline");
+    setText("#dashboard-controller-detail", "API disconnected");
+    setText("#dashboard-scheduler-status", "Schedule Unknown");
+    setText("#dashboard-scheduler-detail", "Waiting for controller");
+  }
+}
+
+function renderConnectionLogo() {
+  const showOfflineLogo = !controllerOnline || logoPreviewOffline;
+  document.body.classList.toggle("controller-offline", showOfflineLogo);
+  document.body.classList.toggle("controller-online", controllerOnline);
+
+  const logo = document.querySelector(".brand-logo");
+  if (logo) {
+    const nextSrc = showOfflineLogo ? logo.dataset.offlineSrc : logo.dataset.onlineSrc;
+    if (nextSrc && logo.getAttribute("src") !== nextSrc) {
+      logo.setAttribute("src", nextSrc);
+    }
+    logo.alt = showOfflineLogo
+      ? "HauntPI Haunt Controller disconnected"
+      : "HauntPI Haunt Controller connected";
+  }
+
+  const badge = document.querySelector("#brand-status-badge");
+  if (badge) {
+    badge.textContent = showOfflineLogo ? "Offline" : "Connected";
   }
 }
 
@@ -1265,7 +1642,13 @@ async function apiUpload(path, formData) {
 async function handleResponse(response) {
   const data = await response.json();
   if (!response.ok || data.ok === false) {
-    throw new Error(data.error || `Request failed: ${response.status}`);
+    const error = new Error(data.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    if (response.status === 401) {
+      const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+      window.location.href = `/login?next=${next}`;
+    }
+    throw error;
   }
   return data;
 }
@@ -1345,7 +1728,7 @@ function tileMeta(tile) {
   if (tile.type === "sound") {
     return [
       { label: "Mode", value: formatMode(tile.mode || "play_and_continue") },
-      { label: "Volume", value: "100%" },
+      { label: "Overlap", value: tile.allow_concurrent ? "Allowed" : "Stops audio" },
     ];
   }
   if (tile.type === "video") {
@@ -1400,11 +1783,11 @@ function focusTileControls(card) {
 function renderMediaLists() {
   setText("#audio-count", String(audioFiles.length));
   setText("#video-count", String(videoFiles.length));
-  renderMediaList("#audio-files-list", audioFiles, "No audio files");
-  renderMediaList("#video-files-list", videoFiles, "No video files");
+  renderMediaList("#audio-files-list", audioFiles, "No audio files", "audio");
+  renderMediaList("#video-files-list", videoFiles, "No video files", "video");
 }
 
-function renderMediaList(selector, files, emptyText) {
+function renderMediaList(selector, files, emptyText, kind) {
   const list = document.querySelector(selector);
   if (!list) {
     return;
@@ -1420,7 +1803,12 @@ function renderMediaList(selector, files, emptyText) {
   files.slice(0, 4).forEach((file) => {
     const row = document.createElement("div");
     row.className = "media-row";
-    row.innerHTML = `<span>${escapeHtml(file)}</span><button type="button">Play</button>`;
+    const name = document.createElement("span");
+    name.textContent = file;
+    row.append(
+      name,
+      actionButton("Play", () => testMedia(kind, file), "secondary-button compact-button")
+    );
     list.appendChild(row);
   });
 }
@@ -1475,6 +1863,12 @@ function showToast(text, isError = false) {
   }, 2600);
 }
 
+function showActionError(error) {
+  const message = error?.message || "Action failed";
+  showToast(message, true);
+  showMessage(message, true);
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -1495,7 +1889,8 @@ function routineStepShortText(inputId) {
 }
 
 function inputSummaryText(inputId) {
-  return `${routineStepShortText(inputId)} ready`;
+  const concurrentText = devices?.inputs?.[inputId]?.allow_concurrent ? "concurrent" : "exclusive";
+  return `${routineStepShortText(inputId)} ready / ${concurrentText}`;
 }
 
 function cooldownText(input) {
@@ -1541,12 +1936,13 @@ function setupPayload() {
     inputNames[input.dataset.deviceId] = input.value;
   });
 
-    return {
-      controller_name: document.querySelector("#setup-controller-name")?.value || "HauntOS Controller",
-      outputs: outputNames,
-      inputs: inputNames,
-    };
-  }
+  return {
+    controller_name: setupControllerName(),
+    mock_mode: Boolean(document.querySelector("#setup-mock-mode")?.checked),
+    outputs: outputNames,
+    inputs: inputNames,
+  };
+}
 
 function schedulerPayload() {
   const mode = document.querySelector("#scheduler-mode")?.value || "random";

@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}HauntOS{% endblock %}</title>
+    <link rel="preload" as="image" href="{{ url_for('static', filename='img/hauntpi-logo-offline.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
   </head>
@@ -13,8 +14,15 @@
     <div class="app-shell">
       <aside class="sidebar" aria-label="HauntOS navigation">
         <a class="brand" href="/" aria-label="HauntOS dashboard">
-          <img class="brand-logo" src="{{ url_for('static', filename='img/hauntpi-logo.png') }}" alt="HauntPI Haunt Controller">
+          <img
+            class="brand-logo"
+            src="{{ url_for('static', filename='img/hauntpi-logo.png') }}"
+            data-online-src="{{ url_for('static', filename='img/hauntpi-logo.png') }}"
+            data-offline-src="{{ url_for('static', filename='img/hauntpi-logo-offline.png') }}"
+            alt="HauntPI Haunt Controller connected"
+          >
         </a>
+        <div id="brand-status-badge" class="brand-status-badge">Connected</div>
 
         <nav class="nav" aria-label="Primary">
           <a href="/" {% if active_page == "dashboard" %}aria-current="page"{% endif %}><img class="nav-icon" src="{{ url_for('static', filename='img/icons/dashboard.svg') }}" alt="" aria-hidden="true">Dashboard</a>
@@ -39,7 +47,7 @@
             </div>
             <div>
               <dt>Version</dt>
-              <dd id="sidebar-version">1.0.0</dd>
+              <dd id="sidebar-version">v0.1.0-alpha</dd>
             </div>
           </dl>
         </section>
@@ -48,7 +56,7 @@
       <div class="content-shell">
         <header class="topbar">
           <div>
-            <span class="eyebrow">HauntOS V1</span>
+            <span class="eyebrow">HauntOS Alpha</span>
             <strong id="top-status">Status loading</strong>
           </div>
           <div class="topbar-actions">

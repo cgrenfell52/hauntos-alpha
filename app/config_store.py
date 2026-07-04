@@ -14,6 +14,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    from app import auth, routine_schema
+except ImportError:  # Allows running this file directly from the app folder.
+    import auth  # type: ignore
+    import routine_schema  # type: ignore
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,10 +38,10 @@ DEFAULT_DEVICES = {
         "OUT8": {"name": "Output 8", "gpio": 6, "enabled": True},
     },
     "inputs": {
-        "IN1": {"name": "Input 1", "gpio": 12, "enabled": True, "cooldown": 5},
-        "IN2": {"name": "Input 2", "gpio": 13, "enabled": True, "cooldown": 5},
-        "IN3": {"name": "Input 3", "gpio": 16, "enabled": True, "cooldown": 5},
-        "IN4": {"name": "Input 4", "gpio": 19, "enabled": True, "cooldown": 5},
+        "IN1": {"name": "Input 1", "gpio": 12, "enabled": True, "cooldown": 5, "allow_concurrent": False},
+        "IN2": {"name": "Input 2", "gpio": 13, "enabled": True, "cooldown": 5, "allow_concurrent": False},
+        "IN3": {"name": "Input 3", "gpio": 16, "enabled": True, "cooldown": 5, "allow_concurrent": False},
+        "IN4": {"name": "Input 4", "gpio": 19, "enabled": True, "cooldown": 5, "allow_concurrent": False},
     },
 }
 
@@ -53,6 +59,8 @@ DEFAULT_SETTINGS = {
     "controller_name": "HauntOS Controller",
     "setup_complete": False,
     "show_armed": False,
+    "auth_enabled": True,
+    "operator_pin_hash": auth.default_pin_hash(),
     "scheduler": {
         "enabled": False,
         "start_time": "19:00",
@@ -103,6 +111,18 @@ def load_config(name: str) -> dict[str, Any]:
         default_data = _default_for(config_name)
         save_config(config_name, default_data)
         return default_data
+
+    if config_name == "devices":
+        merged = _merge_devices_defaults(data)
+        if merged != data:
+            save_config(config_name, merged)
+        return merged
+
+    if config_name == "routines":
+        normalized = routine_schema.normalize_routines(data, get_devices())
+        if normalized != data:
+            save_config(config_name, normalized)
+        return normalized
 
     if config_name == "settings":
         merged = _merge_settings_defaults(data)
@@ -163,17 +183,17 @@ def get_settings() -> dict[str, Any]:
 
 def save_devices(data: dict[str, Any]) -> None:
     """Save devices.json."""
-    save_config("devices", data)
+    save_config("devices", _merge_devices_defaults(data))
 
 
 def save_routines(data: dict[str, Any]) -> None:
     """Save routines.json."""
-    save_config("routines", data)
+    save_config("routines", routine_schema.normalize_routines(data, get_devices()))
 
 
 def save_settings(data: dict[str, Any]) -> None:
     """Save settings.json."""
-    save_config("settings", data)
+    save_config("settings", _merge_settings_defaults(data))
 
 
 def reset_config(name: str) -> dict[str, Any]:
@@ -220,13 +240,14 @@ def _is_valid_config(name: str, data: Any) -> bool:
         return _valid_devices(data)
 
     if name == "routines":
-        return all(
-            input_id in data and isinstance(data[input_id], list)
-            for input_id in _input_ids()
-        )
+        try:
+            routine_schema.validate_routines(data, DEFAULT_DEVICES)
+        except ValueError:
+            return False
+        return True
 
     if name == "settings":
-        return _has_keys(data, ("mock_mode", "active_low_outputs", "active_low_inputs"))
+        return _valid_settings(data)
 
     return False
 
@@ -242,20 +263,91 @@ def _valid_devices(data: dict[str, Any]) -> bool:
     outputs = data["outputs"]
     inputs = data["inputs"]
 
-    outputs_valid = all(
-        output_id in outputs
-        and isinstance(outputs[output_id], dict)
-        and _has_keys(outputs[output_id], ("name", "gpio", "enabled"))
-        for output_id in _output_ids()
-    )
-    inputs_valid = all(
-        input_id in inputs
-        and isinstance(inputs[input_id], dict)
-        and _has_keys(inputs[input_id], ("name", "gpio", "enabled", "cooldown"))
-        for input_id in _input_ids()
-    )
+    outputs_valid = all(_valid_output(outputs.get(output_id)) for output_id in _output_ids())
+    inputs_valid = all(_valid_input(inputs.get(input_id)) for input_id in _input_ids())
 
     return outputs_valid and inputs_valid
+
+
+def _valid_output(output: Any) -> bool:
+    return (
+        isinstance(output, dict)
+        and isinstance(output.get("name"), str)
+        and _is_int(output.get("gpio"))
+        and isinstance(output.get("enabled"), bool)
+    )
+
+
+def _valid_input(input_config: Any) -> bool:
+    if not (
+        isinstance(input_config, dict)
+        and isinstance(input_config.get("name"), str)
+        and _is_int(input_config.get("gpio"))
+        and isinstance(input_config.get("enabled"), bool)
+        and _is_number(input_config.get("cooldown"))
+        and float(input_config.get("cooldown")) >= 0
+    ):
+        return False
+
+    allow_concurrent = input_config.get("allow_concurrent", False)
+    return isinstance(allow_concurrent, bool)
+
+
+def _valid_settings(settings: dict[str, Any]) -> bool:
+    required_bools = ("mock_mode", "active_low_outputs", "active_low_inputs")
+    if not all(isinstance(settings.get(key), bool) for key in required_bools):
+        return False
+
+    optional_bools = ("setup_complete", "show_armed", "auth_enabled")
+    if any(key in settings and not isinstance(settings.get(key), bool) for key in optional_bools):
+        return False
+
+    if "controller_name" in settings and not isinstance(settings.get("controller_name"), str):
+        return False
+
+    if "operator_pin_hash" in settings and not isinstance(settings.get("operator_pin_hash"), str):
+        return False
+
+    scheduler_settings = settings.get("scheduler")
+    if scheduler_settings is not None and not _valid_scheduler_settings(scheduler_settings):
+        return False
+
+    return True
+
+
+def _valid_scheduler_settings(settings: Any) -> bool:
+    if not isinstance(settings, dict):
+        return False
+
+    if "enabled" in settings and not isinstance(settings.get("enabled"), bool):
+        return False
+
+    mode = settings.get("mode")
+    if mode is not None and mode not in {"fixed", "random"}:
+        return False
+
+    routine = settings.get("routine")
+    if routine is not None and not isinstance(routine, str):
+        return False
+
+    start_time = settings.get("start_time")
+    if start_time is not None and not _valid_time_string(start_time):
+        return False
+
+    end_time = settings.get("end_time")
+    if end_time is not None and not _valid_time_string(end_time):
+        return False
+
+    interval_min = settings.get("interval_min")
+    interval_max = settings.get("interval_max")
+    if interval_min is not None and not _is_positive_int(interval_min):
+        return False
+    if interval_max is not None and not _is_positive_int(interval_max):
+        return False
+    if interval_min is not None and interval_max is not None and int(interval_max) < int(interval_min):
+        return False
+
+    return True
 
 
 def _has_keys(data: dict[str, Any], keys: tuple[str, ...]) -> bool:
@@ -271,7 +363,64 @@ def _merge_settings_defaults(settings: dict[str, Any]) -> dict[str, Any]:
         merged["scheduler"] = copy.deepcopy(DEFAULT_SCHEDULER)
         merged["scheduler"].update(scheduler_settings)
 
+    if not _valid_settings(merged):
+        raise ValueError("Invalid settings config structure")
+
     return merged
+
+
+def _merge_devices_defaults(devices: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(DEFAULT_DEVICES)
+
+    outputs = devices.get("outputs", {}) if isinstance(devices, dict) else {}
+    if isinstance(outputs, dict):
+        for output_id, output in outputs.items():
+            if output_id in merged["outputs"] and isinstance(output, dict):
+                merged["outputs"][output_id].update(output)
+
+    inputs = devices.get("inputs", {}) if isinstance(devices, dict) else {}
+    if isinstance(inputs, dict):
+        for input_id, input_config in inputs.items():
+            if input_id in merged["inputs"] and isinstance(input_config, dict):
+                merged["inputs"][input_id].update(input_config)
+                allow_concurrent = input_config.get("allow_concurrent", False)
+                if not isinstance(allow_concurrent, bool):
+                    raise ValueError(f"{input_id} allow_concurrent must be true or false")
+                merged["inputs"][input_id]["allow_concurrent"] = allow_concurrent
+
+    if not _valid_devices(merged):
+        raise ValueError("Invalid devices config structure")
+
+    return merged
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_positive_int(value: Any) -> bool:
+    return _is_int(value) and value > 0
+
+
+def _valid_time_string(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+
+    parts = value.split(":")
+    if len(parts) != 2:
+        return False
+
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return False
+
+    return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
 def _output_ids() -> tuple[str, ...]:

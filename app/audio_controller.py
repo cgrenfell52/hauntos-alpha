@@ -37,12 +37,16 @@ def list_audio_files() -> list[str]:
     )
 
 
-def play_sound(filename: str, mode: str = "play_and_continue") -> bool:
+def play_sound(filename: str, mode: str = "play_and_continue", allow_concurrent: bool = False) -> bool:
     """Play an audio file.
 
     Returns True when playback was started or mocked, and False when the file is
     missing or the mode is invalid.
     """
+    if not isinstance(allow_concurrent, bool):
+        print("Audio: allow_concurrent must be true or false")
+        return False
+
     if mode not in {"play_and_continue", "wait_until_done"}:
         print(f"Audio: unsupported mode '{mode}'")
         return False
@@ -54,8 +58,12 @@ def play_sound(filename: str, mode: str = "play_and_continue") -> bool:
         print(f"Audio: file not found: {filename}")
         return False
 
+    if not allow_concurrent:
+        stop_all_sounds()
+
     if _use_mock_audio():
-        print(f"Audio: mock play {audio_path.name} ({mode})")
+        concurrency = "overlap allowed" if allow_concurrent else "exclusive"
+        print(f"Audio: mock play {audio_path.name} ({mode}, {concurrency})")
         return True
 
     try:
@@ -88,6 +96,13 @@ def stop_all_sounds() -> None:
 
     PYGAME.mixer.stop()
     ACTIVE_CHANNELS.clear()
+
+
+def reset_runtime_config() -> None:
+    """Refresh cached runtime settings after setup or config import changes."""
+    global MOCK_MODE
+
+    MOCK_MODE = None
 
 
 def _use_mock_audio() -> bool:

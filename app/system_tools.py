@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from app import config_store
+    from app import config_store, routine_schema
 except ImportError:  # Allows running this file directly from the app folder.
     import config_store  # type: ignore
+    import routine_schema  # type: ignore
 
 
-VERSION = "1.0.0"
+VERSION = "v0.1.0-alpha"
 SERVICE_NAME = "hauntos.service"
 BACKUP_VERSION = 1
 HOTSPOT_URL = "http://192.168.4.1:5000"
@@ -39,7 +40,7 @@ def import_config_bundle(bundle: dict[str, Any]) -> None:
     """Validate and replace all known configs from a backup bundle."""
     configs = _extract_configs(bundle)
     config_store.validate_config("devices", configs["devices"])
-    config_store.validate_config("routines", configs["routines"])
+    routine_schema.validate_routines(configs["routines"], configs["devices"])
     config_store.validate_config("settings", configs["settings"])
 
     config_store.save_devices(configs["devices"])

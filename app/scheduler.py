@@ -78,8 +78,6 @@ def scheduler_loop() -> None:
                 _next_run_at = None
             elif not _is_armed():
                 _next_run_at = None
-            elif routine_engine.is_running():
-                pass
             else:
                 now = time.monotonic()
                 if _next_run_at is None:
@@ -131,11 +129,20 @@ def scheduler_status() -> dict[str, Any]:
 
 
 def _normalize_scheduler_settings(data: dict[str, Any]) -> dict[str, Any]:
-    mode = str(data.get("mode", config_store.DEFAULT_SCHEDULER["mode"])).lower()
+    enabled = data.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be true or false")
+
+    mode_value = data.get("mode", config_store.DEFAULT_SCHEDULER["mode"])
+    if not isinstance(mode_value, str):
+        raise ValueError("Scheduler mode must be fixed or random")
+    mode = mode_value.lower()
     if mode not in ("fixed", "random"):
         raise ValueError("Scheduler mode must be fixed or random")
 
-    routine = str(data.get("routine", config_store.DEFAULT_SCHEDULER["routine"]))
+    routine = data.get("routine", config_store.DEFAULT_SCHEDULER["routine"])
+    if not isinstance(routine, str):
+        raise ValueError("routine must be a string")
     routines = config_store.get_routines()
     if routine != "random" and routine not in routines:
         raise ValueError(f"Unknown routine: {routine}")
@@ -151,7 +158,7 @@ def _normalize_scheduler_settings(data: dict[str, Any]) -> dict[str, Any]:
     end_time = _normalize_time(data.get("end_time", config_store.DEFAULT_SCHEDULER["end_time"]))
 
     return {
-        "enabled": bool(data.get("enabled", False)),
+        "enabled": enabled,
         "start_time": start_time,
         "end_time": end_time,
         "mode": mode,
@@ -174,12 +181,26 @@ def _run_scheduled_routine(settings: dict[str, Any]) -> None:
         return
 
     LOGGER.info("Scheduler running routine %s", routine_id)
-    routine_engine.run_routine(tile_list, routine_id=routine_id)
+    devices = config_store.get_devices()
+    input_config = devices.get("inputs", {}).get(routine_id, {})
+    allow_concurrent = (
+        bool(input_config.get("allow_concurrent", False))
+        if isinstance(input_config, dict)
+        else False
+    )
+    try:
+        routine_engine.run_routine(tile_list, routine_id=routine_id, allow_concurrent=allow_concurrent)
+    except routine_engine.RoutineConcurrencyError as exc:
+        LOGGER.info("Scheduler routine %s blocked: %s", routine_id, exc)
 
 
 def _choose_routine_id(settings: dict[str, Any], routines: dict[str, Any]) -> str | None:
     if settings.get("routine") == "random":
-        candidates = [routine_id for routine_id, tiles in routines.items() if isinstance(tiles, list)]
+        candidates = [
+            routine_id
+            for routine_id, tiles in routines.items()
+            if isinstance(tiles, list) and len(tiles) > 0
+        ]
         if not candidates:
             return None
         return random.choice(candidates)
@@ -235,6 +256,8 @@ def _time_to_minutes(value: str) -> int:
 
 
 def _positive_int(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a positive integer")
     try:
         number = int(value)
     except (TypeError, ValueError) as exc:

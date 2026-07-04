@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Operator Login | HauntOS</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  </head>
+  <body class="login-body">
+    <main class="login-shell">
+      <section class="login-card" aria-label="Operator login">
+        <img
+          class="login-logo"
+          src="{{ url_for('static', filename='img/hauntpi-logo.png') }}"
+          alt="HauntPI Haunt Controller"
+        >
+        <form id="login-form" class="login-form">
+          <label for="operator-pin">Operator PIN</label>
+          <input id="operator-pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus>
+          <button class="primary-button full-width" type="submit">Unlock Controller</button>
+          <p id="login-message" class="message" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      const form = document.querySelector("#login-form");
+      const message = document.querySelector("#login-message");
+      const params = new URLSearchParams(window.location.search);
+      const next = params.get("next") || "/";
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        message.textContent = "";
+        const pin = document.querySelector("#operator-pin").value;
+
+        try {
+          const response = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin }),
+          });
+          const data = await response.json();
+          if (!response.ok || data.ok === false) {
+            throw new Error(data.error || "Login failed");
+          }
+          window.location.href = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+        } catch (error) {
+          message.textContent = error.message;
+          message.classList.add("error");
+        }
+      });
+    </script>
+  </body>
+</html>
